@@ -43,13 +43,21 @@
       <a-marker type="pattern" url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt">
         <a-entity
           gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/cube.glb"
-          scale="1 1 1"
+          scale="0.5 0.5 0.5"
           position="0 0 0">
         </a-entity>
       </a-marker>
 
       <!-- Camera for AR -->
-      <a-entity camera></a-entity>
-    </a-scene>
-  </body>
+    <a-entity camera></a-entity>
+  </a-scene>
+
+  <script>
+    // Hide the loading overlay when AR is ready
+    window.addEventListener('arjs-video-loaded', () => {
+      const loader = document.querySelector('.arjs-loader');
+      if (loader) loader.style.display = 'none';
+    });
+  </script>
+</body>
 </html>
