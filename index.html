@@ -1,30 +1,42 @@
-<style>
-  body {
-    margin: 0;
-    overflow: hidden;
-    height: 100%;
-    width: 100%;
-  }
-  #ar-container {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-  }
-</style>
-
-<body>
-  <div id="ar-container">
-    <a-scene embedded arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false; videoWidth: 1080; videoHeight: 2340;">
-      <a-marker preset="hiro">
-        <a-entity
-          gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/pokedex_3d_pro_glaceon.glb"
-          scale="0.5 0.5 0.5"
-          position="0 0 0">
-        </a-entity>
-      </a-marker>
-      <a-entity camera></a-entity>
-    </a-scene>
-  </div>
-</body>
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Glaceon AR</title>
+    <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/jeromeetienne/AR.js/aframe/build/aframe-ar.min.js"></script>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        height: 100%;
+        width: 100%;
+      }
+      #ar-container {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ar-container">
+      <a-scene
+        embedded
+        arjs="sourceType: webcam; videoTexture: true; debugUIEnabled: false;"
+      >
+        <a-marker preset="hiro">
+          <a-entity
+            gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/pokedex_3d_pro_glaceon.glb"
+            scale="0.5 0.5 0.5"
+            position="0 0 0"
+          ></a-entity>
+        </a-marker>
+        <a-entity camera></a-entity>
+      </a-scene>
+    </div>
+  </body>
+</html>
