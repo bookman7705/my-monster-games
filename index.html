@@ -1,16 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
-    <!-- A-Frame version 1.3.0 -->
     <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
-    <!-- AR.js version 3.4.5 -->
     <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
 
     <style>
       .arjs-loader {
         height: 100%;
         width: 100%;
-        position: absolute;
+        position: fixed;
         top: 0;
         left: 0;
         background-color: rgba(0, 0, 0, 0.8);
@@ -22,51 +20,47 @@
 
       .arjs-loader div {
         text-align: center;
-        font-size: 1.25em;
+        font-size: 1.5em;
         color: white;
       }
     </style>
   </head>
-  <body style="margin: 0px; overflow: hidden;">
-    <!-- minimal loader shown until image descriptors are loaded -->
-    <div class="arjs-loader">
+  <body style="margin: 0; overflow: hidden">
+    <div class="arjs-loader" id="loader">
       <div>Loading, please wait...</div>
     </div>
 
     <a-scene
-      vr-mode-ui="enabled: false;"
-      renderer="logarithmicDepthBuffer: true; precision: medium;"
       embedded
+      vr-mode-ui="enabled: false"
+      renderer="logarithmicDepthBuffer: true; precision: medium"
       arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
     >
-      <!-- Use your custom image marker -->
-      <a-marker type="pattern" url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt">
+      <a-marker
+        id="marker"
+        type="pattern"
+        url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
+      >
         <a-entity
           gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/cube.glb"
           scale="0.25 0.25 0.25"
-          position="0 0 0">
-        </a-entity>
+          position="0 0 0"
+        ></a-entity>
       </a-marker>
+      <a-entity camera></a-entity>
+    </a-scene>
 
-      <!-- Camera for AR -->
-    <a-entity camera></a-entity>
-  </a-scene>
+    <script>
+      window.addEventListener("DOMContentLoaded", () => {
+        const marker = document.getElementById("marker");
+        const loader = document.getElementById("loader");
 
-
-
-  <script>
-  document.addEventListener("DOMContentLoaded", () => {
-    const marker = document.querySelector("a-marker");
-    const loader = document.querySelector(".arjs-loader");
-
-    if (marker && loader) {
-      marker.addEventListener("markerFound", () => {
-        loader.style.display = "none";
+        if (marker && loader) {
+          marker.addEventListener("markerFound", () => {
+            loader.style.display = "none";
+          });
+        }
       });
-    }
-  });
-</script>
-
-
-</body>
+    </script>
+  </body>
 </html>
