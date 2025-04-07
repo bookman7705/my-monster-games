@@ -37,7 +37,6 @@
       arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
     >
       <a-marker
-        id="marker"
         type="pattern"
         url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
       >
@@ -51,15 +50,9 @@
     </a-scene>
 
     <script>
-      window.addEventListener("DOMContentLoaded", () => {
-        const marker = document.getElementById("marker");
+      window.addEventListener("arjs-video-loaded", () => {
         const loader = document.getElementById("loader");
-
-        if (marker && loader) {
-          marker.addEventListener("markerFound", () => {
-            loader.style.display = "none";
-          });
-        }
+        if (loader) loader.style.display = "none";
       });
     </script>
   </body>
