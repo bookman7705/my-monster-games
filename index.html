@@ -1,4 +1,4 @@
-script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.6.0/dist/aframe-master.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.6.0/dist/aframe-master.min.js"></script>
 <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar-nft.js"></script>
 
 <style>
@@ -31,24 +31,16 @@ script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@1.6.0/dist/aframe-master
     vr-mode-ui="enabled: false;"
     renderer="logarithmicDepthBuffer: true; precision: medium;"
     embedded
-    arjs="trackingMethod: best; sourceType: webcam;debugUIEnabled: false;"
+    arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
   >
-    <!-- we use cors proxy to avoid cross-origin problems ATTENTION! you need to set up your server -->
-    <a-nft
-      type="nft"
-      url="your-server/https://raw.githack.com/AR-js-org/AR.js/master/aframe/examples/image-tracking/nft/trex/trex-image/trex"
-      smooth="true"
-      smoothCount="10"
-      smoothTolerance=".01"
-      smoothThreshold="5"
-    >
+    <!-- Use your custom image as the marker -->
+    <a-marker type="pattern" url="https://bookman7705.github.io/my-monster-games/hiro.patt">
       <a-entity
         gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/cube.glb"
         scale="5 5 5"
-        position="150 300 -100"
-      >
+        position="150 300 -100">
       </a-entity>
-    </a-nft>
+    </a-marker>
     <a-entity camera></a-entity>
   </a-scene>
 </body>
