@@ -35,11 +35,12 @@
   >
     <!-- Use your custom image as the marker -->
     <a-marker type="pattern" url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt">
-      <a-entity
-        gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/cube.glb"
-        scale="5 5 5"
-        position="150 300 -100">
-      </a-entity>
+      <!-- Cube primitive instead of glb model -->
+      <a-box 
+        position="0 0 0" 
+        scale="3 3 3" 
+        color="#4CC3D9">
+      </a-box>
     </a-marker>
     <a-entity camera></a-entity>
   </a-scene>
