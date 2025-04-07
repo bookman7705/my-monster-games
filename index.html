@@ -42,7 +42,7 @@
       >
         <a-entity
           gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/cube.glb"
-          scale="0.25 0.25 0.25"
+          scale="0.1 0.1 0.1"
           position="0 0 0"
         ></a-entity>
       </a-marker>
@@ -50,10 +50,17 @@
     </a-scene>
 
     <script>
-      window.addEventListener("arjs-video-loaded", () => {
+      // Try removing loader when scene loads
+      document.querySelector('a-scene').addEventListener('loaded', () => {
         const loader = document.getElementById("loader");
         if (loader) loader.style.display = "none";
       });
+      
+      // Fallback: remove loader after 3 seconds no matter what
+      setTimeout(() => {
+        const loader = document.getElementById("loader");
+        if (loader) loader.style.display = "none";
+      }, 3000);
     </script>
   </body>
 </html>
