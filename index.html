@@ -1,66 +1,74 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <script src="https://cdn.jsdelivr.net/npm/mindar.js"></script> <!-- Load MindAR JS -->
-    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
-
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MindAR Image Tracking</title>
+    <!-- Load A-Frame first -->
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <!-- Then load MindAR A-Frame adapter -->
+    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+    
     <style>
-      .arjs-loader {
-        height: 100%;
-        width: 100%;
-        position: fixed;
-        top: 0;
-        left: 0;
-        background-color: rgba(0, 0, 0, 0.8);
-        z-index: 9999;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-      }
-
-      .arjs-loader div {
-        text-align: center;
-        font-size: 1.5em;
-        color: white;
-      }
+        .arjs-loader {
+            height: 100%;
+            width: 100%;
+            position: fixed;
+            top: 0;
+            left: 0;
+            background-color: rgba(0, 0, 0, 0.8);
+            z-index: 9999;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 1.25rem;
+        }
+        /* Hide the A-Frame UI */
+        .a-enter-vr {
+            display: none !important;
+        }
     </style>
-  </head>
-  <body style="margin: 0; overflow: hidden">
+</head>
+<body style="margin: 0; overflow: hidden">
     <div class="arjs-loader" id="loader">
-      <div>Loading, please wait...</div>
+        Loading, please wait...
     </div>
 
-    <!-- MindAR Scene -->
-    <div id="mindar-container" style="width: 100%; height: 100%;"></div> <!-- Container for MindAR -->
-    
-    <script>
-      // Initialize MindAR
-      const mindar = new MindAR.MindAR({
-        container: document.getElementById('mindar-container'),
-        imageTargetSrc: 'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/targets.mind', // Path to the .mind file
-      });
+    <a-scene 
+        vr-mode-ui="enabled: false"
+        mindar-image="imageTargetSrc: https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/targets.mind;"
+        renderer="colorManagement: true; precision: medium;"
+        embedded
+    >
+        <a-assets>
+            <a-asset-item id="animatedModel" src="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"></a-asset-item>
+        </a-assets>
 
-      // Once the scene is loaded, remove the loader
-      mindar.start().then(() => {
-        const loader = document.getElementById("loader");
-        if (loader) loader.style.display = "none";
-      }).catch(err => {
-        console.error('Error starting MindAR:', err);
-      });
-    </script>
-
-    <!-- A-Frame components for your monster models -->
-    <a-scene embedded vr-mode-ui="enabled: false" renderer="logarithmicDepthBuffer: true; precision: medium">
-      <a-entity mindar-image-target="target: #monster-target">
-        <a-entity
-          gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
-          scale="2 2 2"
-          position="0 0 0"
-          rotation="0 0 0"
-          animation-mixer
-        ></a-entity>
-      </a-entity>
-      <a-entity camera></a-entity>
+        <a-entity mindar-image-target="targetIndex: 0">
+            <a-entity
+                gltf-model="#animatedModel"
+                scale="2 2 2"
+                position="0 0 0"
+                rotation="0 0 0"
+                animation-mixer
+            ></a-entity>
+        </a-entity>
+        
+        <a-entity camera></a-entity>
     </a-scene>
-  </body>
+
+    <script>
+        // Remove loader when AR is ready
+        document.querySelector('a-scene').addEventListener('arReady', () => {
+            document.getElementById('loader').style.display = 'none';
+        });
+        
+        // Fallback in case arReady doesn't fire
+        setTimeout(() => {
+            const loader = document.getElementById('loader');
+            if (loader) loader.style.display = 'none';
+        }, 5000);
+    </script>
+</body>
 </html>
