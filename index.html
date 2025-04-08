@@ -3,8 +3,7 @@
   <head>
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
     <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
-
-<style>
+    <style>
       /* Style for the version text overlay */
       .version-overlay {
         position: fixed;
@@ -18,11 +17,9 @@
         border-radius: 5px;
       }
     </style>
-
   </head>
   <body style="margin: 0; overflow: hidden">
-
-  <!-- Version overlay text -->
+    <!-- Version overlay text -->
     <div class="version-overlay">Version 1.0</div>
 
     <a-scene embedded arjs="trackingMethod: best; sourceType: webcam;">
@@ -39,7 +36,7 @@
         <!-- 3D model -->
         <a-entity
           id="modelEntity"
-          gltf-model=""https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb""
+          gltf-model="#model"
           scale="2 2 2"
           position="0 0 0"
           animation-mixer
