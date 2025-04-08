@@ -1,9 +1,11 @@
-<!DOCTYPE html>
+<!LAST WORKING html>
 <html lang="en">
   <head>
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
     <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
-    <style>
+
+
+	<style>
       /* Style for the version text overlay */
       .version-overlay {
         position: fixed;
@@ -17,54 +19,42 @@
         border-radius: 5px;
       }
     </style>
-  </head>
+
+
+      </head>
   <body style="margin: 0; overflow: hidden">
-    <!-- Version overlay text -->
-    <div class="version-overlay">Version 1.0</div>
 
-    <a-scene embedded arjs="trackingMethod: best; sourceType: webcam;">
-      <!-- Define the assets -->
-      <a-assets>
-        <a-asset-item id="model" src="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"></a-asset-item>
-      </a-assets>
+	<!-- Version overlay text -->
+    <div class="version-overlay">Version 2.0</div>
+  
+  
+    <div class="arjs-loader" id="loader">
+      <div>Loading, please wait...</div>
+    </div>
 
-      <!-- Define the marker -->
+    <a-scene
+      embedded
+      vr-mode-ui="enabled: false"
+      renderer="logarithmicDepthBuffer: true; precision: medium"
+      arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+    >
       <a-marker
         type="pattern"
         url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
       >
-        <!-- 3D model -->
         <a-entity
-          id="modelEntity"
-          gltf-model="#model"
-          scale="2 2 2"
-          position="0 0 0"
-          animation-mixer
-        ></a-entity>
+		  gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
+		  scale="2 2 2"
+		  position="0 0 0"
+		  rotation="0 0 0"
+		  animation-mixer
+		></a-entity>
       </a-marker>
-
+	  
       <a-entity camera></a-entity>
     </a-scene>
 
-    <script>
-      // Lock the model in place after it's loaded
-      const modelEntity = document.querySelector("#modelEntity");
-
-      modelEntity.addEventListener("loaded", function () {
-        // Clone the position when the model is first loaded
-        const lockedPosition = modelEntity.object3D.position.clone();
-
-        // After it's loaded, keep the model at its initial position
-        modelEntity.addEventListener("markerFound", () => {
-          // Lock the model's position once the marker is found
-          modelEntity.object3D.position.set(lockedPosition.x, lockedPosition.y, lockedPosition.z);
-        });
-
-        modelEntity.addEventListener("markerLost", () => {
-          // If marker is lost, the model stays at the locked position
-          modelEntity.object3D.position.set(lockedPosition.x, lockedPosition.y, lockedPosition.z);
-        });
-      });
-    </script>
+    
+<script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
   </body>
 </html>
