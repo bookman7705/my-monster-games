@@ -1,57 +1,15 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- A-Frame core -->
-    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
-    <!-- MindAR adapter -->
-    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
-    <!-- animation-mixer -->
-    <script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.1/dist/aframe-extras.min.js"></script>
-  </head>
-  <body>
-    <a-scene 
-      mindar-image="imageTargetSrc: https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/mind/card.mind" 
-      vr-mode-ui="enabled: false" 
-      device-orientation-permission-ui="enabled: false" 
-      embedded
-      renderer="colorManagement: true;"
-    >
-      <!-- Assets -->
-      <a-assets timeout="30000">
-        <a-asset-item id="leafeonModel" src="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"></a-asset-item>
-      </a-assets>
-
-      <!-- Marker -->
-      <a-entity mindar-image-target="targetIndex: 0">
-        <a-entity 
-          id="leafeon"
-          gltf-model="#leafeonModel"
-          scale="2 2 2"
-          position="0 0 0"
-          rotation="0 0 0"
-        ></a-entity>
-      </a-entity>
-
-      <!-- Camera -->
-      <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
-    </a-scene>
-
-    <!-- Add animation-mixer only after model is loaded -->
-    <script>
-      AFRAME.registerComponent('play-on-load', {
-        init: function () {
-          const model = this.el;
-          model.addEventListener('model-loaded', () => {
-            model.setAttribute('animation-mixer', {
-              clip: '*',
-              loop: 'repeat'
-            });
-          });
-        }
-      });
-
-      document.querySelector('#leafeon').setAttribute('play-on-load', '');
-    </script>
-  </body>
+<head>
+<title>AR.js A-Frame Location-based</title>
+<script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
+<script type='text/javascript' src='https://raw.githack.com/AR-js-org/AR.js/3.4.5/three.js/build/ar-threex-location-only.js'></script>
+<script type='text/javascript' src='https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js'></script>
+</head>
+<body>
+<a-scene vr-mode-ui='enabled: false' arjs='sourceType: webcam; videoTexture: true; debugUIEnabled: false' renderer='antialias: true; alpha: true'>
+    <a-camera gps-new-camera='gpsMinDistance: 5'></a-camera>
+    <a-entity material='color: red' geometry='primitive: box' gps-new-entity-place="latitude: <add-your-latitude>; longitude: <add-your-longitude>" scale="10 10 10"></a-entity>
+</a-scene>
+</body>
 </html>
