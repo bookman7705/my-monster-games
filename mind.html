@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/donmccurdy/aframe-extras@v7.0.0/dist/aframe-extras.min.js"></script>
+    <style>
+      /* Full-screen setup for AR scene */
+      html, body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+
+      a-scene {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <a-scene mindar-image="imageTargetSrc: https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/mind/card.mind;" color-space="sRGB" renderer="colorManagement: true; physicallyCorrectLights: true;" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
+      
+      <!-- Assets for the models -->
+      <a-assets>
+        <!-- Add the model asset here -->
+        <a-asset-item id="leafeonModel" src="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"></a-asset-item>
+      </a-assets>
+
+      <!-- Camera Setup -->
+      <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+      <!-- Marker for image tracking -->
+      <a-entity mindar-image-target="targetIndex: 0">
+        <a-gltf-model 
+          src="#leafeonModel" 
+          position="0 0 0" 
+          scale="2 2 2" 
+          rotation="0 0 0" 
+          animation-mixer>
+        </a-gltf-model>
+      </a-entity>
+
+      <!-- Add lights for proper illumination -->
+      <a-light type="ambient" intensity="0.5"></a-light> <!-- Ambient light -->
+      <a-light type="directional" position="2 4 -3" intensity="1"></a-light> <!-- Directional light -->
+    </a-scene>
+  </body>
+</html>

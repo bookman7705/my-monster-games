@@ -1,0 +1,60 @@
+<!LAST WORKING html>
+<html lang="en">
+  <head>
+    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
+
+
+	<style>
+      /* Style for the version text overlay */
+      .version-overlay {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        font-size: 20px;
+        color: red;
+        font-family: Arial, sans-serif;
+        background-color: rgba(0, 0, 0, 0.5); /* Optional, adds a slight transparent background */
+        padding: 5px;
+        border-radius: 5px;
+      }
+    </style>
+
+
+      </head>
+  <body style="margin: 0; overflow: hidden">
+
+	<!-- Version overlay text -->
+    <div class="version-overlay">Version 2.0</div>
+  
+  
+    <div class="arjs-loader" id="loader">
+      <div>Loading, please wait...</div>
+    </div>
+
+    <a-scene
+      embedded
+      vr-mode-ui="enabled: false"
+      renderer="logarithmicDepthBuffer: true; precision: medium"
+      arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+    >
+      <a-marker
+        type="pattern"
+        url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
+      >
+        <a-entity
+		  gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
+		  scale="2 2 2"
+		  position="0 0 0"
+		  rotation="0 0 0"
+		  animation-mixer
+		></a-entity>
+      </a-marker>
+	  
+      <a-entity camera></a-entity>
+    </a-scene>
+
+    
+<script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
+  </body>
+</html>
