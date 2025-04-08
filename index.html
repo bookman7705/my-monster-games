@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+    <script src="https://cdn.jsdelivr.net/npm/mindar.js"></script> <!-- Load MindAR JS -->
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
-    <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
 
     <style>
       .arjs-loader {
@@ -30,41 +30,37 @@
       <div>Loading, please wait...</div>
     </div>
 
-    <a-scene
-      embedded
-      vr-mode-ui="enabled: false"
-      renderer="logarithmicDepthBuffer: true; precision: medium"
-      arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
-    >
-      <a-marker
-        type="pattern"
-        url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
-      >
-        <a-entity
-  gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
-  scale="2 2 2"
-  position="0 0 0"
-  rotation="0 0 0"
-  animation-mixer
-></a-entity>
-      </a-marker>
-      <a-entity camera></a-entity>
-    </a-scene>
-
+    <!-- MindAR Scene -->
+    <div id="mindar-container" style="width: 100%; height: 100%;"></div> <!-- Container for MindAR -->
+    
     <script>
-      // Try removing loader when scene loads
-      document.querySelector('a-scene').addEventListener('loaded', () => {
-        const loader = document.getElementById("loader");
-        if (loader) loader.style.display = "none";
+      // Initialize MindAR
+      const mindar = new MindAR.MindAR({
+        container: document.getElementById('mindar-container'),
+        imageTargetSrc: 'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/targets.mind', // Path to the .mind file
       });
-      
-      // Fallback: remove loader after 3 seconds no matter what
-      setTimeout(() => {
+
+      // Once the scene is loaded, remove the loader
+      mindar.start().then(() => {
         const loader = document.getElementById("loader");
         if (loader) loader.style.display = "none";
-      }, 3000);
+      }).catch(err => {
+        console.error('Error starting MindAR:', err);
+      });
     </script>
 
-<script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
+    <!-- A-Frame components for your monster models -->
+    <a-scene embedded vr-mode-ui="enabled: false" renderer="logarithmicDepthBuffer: true; precision: medium">
+      <a-entity mindar-image-target="target: #monster-target">
+        <a-entity
+          gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
+          scale="2 2 2"
+          position="0 0 0"
+          rotation="0 0 0"
+          animation-mixer
+        ></a-entity>
+      </a-entity>
+      <a-entity camera></a-entity>
+    </a-scene>
   </body>
 </html>
