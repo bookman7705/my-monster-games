@@ -1,36 +1,15 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MindAR Image Tracking</title>
-    <!-- Load A-Frame first -->
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
-    <!-- Then load MindAR A-Frame adapter -->
     <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
-</head>
-<body style="margin: 0; overflow: hidden">
-    <a-scene 
-        mindar-image="imageTargetSrc: https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/card.mind;"
-        vr-mode-ui="enabled: false"
-        device-orientation-permission-ui="enabled: false"
-        embedded
-    >
-        <a-assets>
-            <a-asset-item id="animatedModel" src="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"></a-asset-item>
-        </a-assets>
-
-        <a-entity mindar-image-target="targetIndex: 0">
-            <a-entity
-                gltf-model="#animatedModel"
-                scale="2 2 2"
-                position="0 0 0"
-                rotation="0 0 0"
-                animation-mixer
-            ></a-entity>
-        </a-entity>
-        
-        <a-entity camera></a-entity>
+  </head>
+  <body>
+    <a-scene mindar-image="imageTargetSrc: https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.mind;" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
+      <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+      <a-entity mindar-image-target="targetIndex: 0">
+        <a-plane color="blue" opaciy="0.5" position="0 0 0" height="0.552" width="1" rotation="0 0 0"></a-plane>
+      </a-entity>
     </a-scene>
-</body>
+  </body>
 </html>
