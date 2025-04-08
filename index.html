@@ -8,37 +8,12 @@
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
     <!-- Then load MindAR A-Frame adapter -->
     <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
-    
-    <style>
-        .arjs-loader {
-            height: 100%;
-            width: 100%;
-            position: fixed;
-            top: 0;
-            left: 0;
-            background-color: rgba(0, 0, 0, 0.8);
-            z-index: 9999;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            color: white;
-            font-size: 1.25rem;
-        }
-        /* Hide the A-Frame UI */
-        .a-enter-vr {
-            display: none !important;
-        }
-    </style>
 </head>
 <body style="margin: 0; overflow: hidden">
-    <div class="arjs-loader" id="loader">
-        Loading, please wait...
-    </div>
-
     <a-scene 
-        vr-mode-ui="enabled: false"
         mindar-image="imageTargetSrc: https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/card.mind;"
-        renderer="colorManagement: true; precision: medium;"
+        vr-mode-ui="enabled: false"
+        device-orientation-permission-ui="enabled: false"
         embedded
     >
         <a-assets>
@@ -57,18 +32,5 @@
         
         <a-entity camera></a-entity>
     </a-scene>
-
-    <script>
-        // Remove loader when AR is ready
-        document.querySelector('a-scene').addEventListener('arReady', () => {
-            document.getElementById('loader').style.display = 'none';
-        });
-        
-        // Fallback in case arReady doesn't fire
-        setTimeout(() => {
-            const loader = document.getElementById('loader');
-            if (loader) loader.style.display = 'none';
-        }, 5000);
-    </script>
 </body>
 </html>
