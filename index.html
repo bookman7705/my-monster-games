@@ -1,11 +1,10 @@
-<!LAST WORKING html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
-    <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
-
-
-	<style>
+    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+    <style>
       /* Style for the version text overlay */
       .version-overlay {
         position: fixed;
@@ -19,42 +18,35 @@
         border-radius: 5px;
       }
     </style>
-
-
-      </head>
+  </head>
   <body style="margin: 0; overflow: hidden">
-
-	<!-- Version overlay text -->
-    <div class="version-overlay">Version 2.0</div>
-  
-  
+    <!-- Version overlay text -->
+    <div class="version-overlay">Version 3.0</div>
+    
     <div class="arjs-loader" id="loader">
       <div>Loading, please wait...</div>
     </div>
 
-    <a-scene
-      embedded
-      vr-mode-ui="enabled: false"
-      renderer="logarithmicDepthBuffer: true; precision: medium"
-      arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
-    >
-      <a-marker
-        type="pattern"
-        url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
-      >
-        <a-entity
-		  gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
-		  scale="2 2 2"
-		  position="0 0 0"
-		  rotation="0 0 0"
-		  animation-mixer
-		></a-entity>
-      </a-marker>
-	  
-      <a-entity camera></a-entity>
-    </a-scene>
+    <a-scene 
+      mindar-image="imageTargetSrc: https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/mind/card.mind;" 
+      vr-mode-ui="enabled: false" 
+      device-orientation-permission-ui="enabled: false" 
+      embedded 
+      renderer="logarithmicDepthBuffer: true; precision: medium">
+      
+      <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
-    
-<script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
+      <!-- Markerless tracking with the .mind file -->
+      <a-entity mindar-image-target="targetIndex: 0">
+        <a-entity 
+          gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb" 
+          scale="2 2 2" 
+          position="0 0 0" 
+          rotation="0 0 0" 
+          animation-mixer>
+        </a-entity>
+      </a-entity>
+
+    </a-scene>
   </body>
 </html>
