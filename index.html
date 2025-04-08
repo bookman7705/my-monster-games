@@ -1,8 +1,13 @@
+<!DOCTYPE html>
 <html>
   <head>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Load A-Frame -->
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <!-- Load MindAR A-Frame adapter -->
     <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+    <!-- Load animation-mixer component -->
+    <script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.1/dist/aframe-extras.min.js"></script>
   </head>
   <body>
     <a-scene 
@@ -13,7 +18,7 @@
     >
 
       <!-- Load the .glb model -->
-      <a-assets>
+      <a-assets timeout="30000">
         <a-asset-item id="myModel" src="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"></a-asset-item>
       </a-assets>
 
@@ -24,11 +29,28 @@
           scale="0.5 0.5 0.5"
           position="0 0 0"
           rotation="0 0 0"
-          animation-mixer="clip: *; loop: repeat"
+          animation-mixer="clip: *; loop: repeat; timeScale: 1"
         ></a-entity>
       </a-entity>
 
       <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
     </a-scene>
+    
+    <script>
+      // Debugging helper
+      document.querySelector('a-scene').addEventListener('loaded', function() {
+        console.log('Scene loaded');
+        const model = document.querySelector('[gltf-model]');
+        model.addEventListener('model-loaded', () => {
+          console.log('GLB model loaded');
+          const mixer = model.components['animation-mixer'];
+          if (mixer) {
+            console.log('Animation mixer found', mixer);
+          } else {
+            console.warn('Animation mixer not found');
+          }
+        });
+      });
+    </script>
   </body>
 </html>
