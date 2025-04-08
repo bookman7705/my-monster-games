@@ -3,8 +3,28 @@
   <head>
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
     <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
+
+<style>
+      /* Style for the version text overlay */
+      .version-overlay {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        font-size: 20px;
+        color: red;
+        font-family: Arial, sans-serif;
+        background-color: rgba(0, 0, 0, 0.5); /* Optional, adds a slight transparent background */
+        padding: 5px;
+        border-radius: 5px;
+      }
+    </style>
+
   </head>
   <body style="margin: 0; overflow: hidden">
+
+  <!-- Version overlay text -->
+    <div class="version-overlay">Version 1.0</div>
+
     <a-scene embedded arjs="trackingMethod: best; sourceType: webcam;">
       <!-- Define the assets -->
       <a-assets>
