@@ -11,24 +11,59 @@
       device-orientation-permission-ui="enabled: false" 
       embedded
     >
-
-      <!-- Load the .glb model -->
+      <!-- Load GLB model once -->
       <a-assets>
         <a-asset-item id="myModel" src="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"></a-asset-item>
       </a-assets>
 
-      <!-- Tracked object -->
-      <a-entity mindar-image-target="targetIndex: 0">
-        <a-entity 
-          gltf-model="#myModel"
-          scale="0.5 0.5 0.5"
-          position="0 0 0"
-          rotation="0 0 0"
-          animation-mixer
-        ></a-entity>
-      </a-entity>
+      <!-- Invisible tracker target used only to get initial position -->
+      <a-entity id="my-target" mindar-image-target="targetIndex: 0"></a-entity>
+
+      <!-- Independent model that will walk around -->
+      <a-entity 
+        id="my-walker"
+        gltf-model="#myModel"
+        scale="0.5 0.5 0.5"
+        position="0 0 0"
+        rotation="0 0 0"
+        animation-mixer
+      ></a-entity>
 
       <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
     </a-scene>
+
+    <script>
+      AFRAME.registerComponent('start-movement-once', {
+        init: function () {
+          const target = document.querySelector("#my-target");
+          const walker = document.querySelector("#my-walker");
+          let initialized = false;
+
+          target.addEventListener("targetFound", () => {
+            if (!initialized) {
+              const pos = target.object3D.position;
+              const worldPos = new THREE.Vector3();
+              target.object3D.getWorldPosition(worldPos);
+
+              // Move the walker to where the marker was first seen
+              walker.object3D.position.copy(worldPos);
+              initialized = true;
+
+              // Example of movement: move along X axis
+              walker.setAttribute("animation", {
+                property: "position",
+                to: "5 0 0",
+                dur: 5000,
+                easing: "linear",
+                loop: false
+              });
+            }
+          });
+        }
+      });
+
+      // Attach the component
+      document.querySelector("#my-target").setAttribute("start-movement-once", "");
+    </script>
   </body>
 </html>
