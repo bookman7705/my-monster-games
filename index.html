@@ -34,7 +34,7 @@
   </head>
   <body>
     <!-- Version overlay text -->
-    <div class="version-overlay">Version 4.0</div>
+    <div class="version-overlay">Version 5.0</div>
 
     <div class="arjs-loader" id="loader">
       <div>Loading, please wait...</div>
@@ -48,10 +48,15 @@
       embedded 
       renderer="logarithmicDepthBuffer: true; precision: medium">
 
+      <!-- Add lights to illuminate the model -->
+      <a-light type="ambient" intensity="0.5"></a-light> <!-- Ambient light -->
+      <a-light type="directional" position="2 4 -3" intensity="1" target="#target"></a-light> <!-- Directional light -->
+
       <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
       <!-- Markerless tracking with the .mind file -->
       <a-entity mindar-image-target="targetIndex: 0">
+        <!-- Ensure that the model is animated and set up properly -->
         <a-entity 
           gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb" 
           scale="2 2 2" 
