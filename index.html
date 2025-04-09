@@ -1,46 +1,88 @@
 <!DOCTYPE html>
-<html>
-<head>
-    <meta charset='utf-8'>
-    <meta http-equiv='X-UA-Compatible' content='IE=edge'>
-    <title>GeoAR.js demo</title>
-    <script src='https://aframe.io/releases/1.7.1/aframe.min.js'></script>
-    <script src="https://raw.githack.com/jeromeetienne/AR.js/master/aframe/build/aframe-ar.min.js"></script>
-    <script src="https://raw.githack.com/donmccurdy/aframe-extras/master/dist/aframe-extras.loaders.min.js"></script>
-    <script>
-        THREEx.ArToolkitContext.baseURL = 'https://raw.githack.com/jeromeetienne/ar.js/master/three.js/'
-    </script>
-	
-	
-	<style>
-      /* Style for the version text overlay */
-      .version-overlay {
-        position: fixed;
-        top: 10px;
-        right: 10px;
-        font-size: 20px;
-        color: red;
-        font-family: Arial, sans-serif;
-        background-color: rgba(0, 0, 0, 0.5); /* Optional, adds a slight transparent background */
-        padding: 5px;
-        border-radius: 5px;
-      }
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebXR Markerless AR Example</title>
+    <style>
+      body { margin: 0; }
+      #canvas { display: block; width: 100%; height: 100%; }
     </style>
-	
-</head>
+  </head>
+  <body>
+    <button id="startButton">Start AR</button>
+    <canvas id="canvas"></canvas>
 
-<body style='margin: 0; overflow: hidden;'>
+    <script>
+      // Initialize WebXR session and AR features
+      let xrSession = null;
+      let xrViewer = null;
 
-	<!-- Version overlay text -->
-    <div class="version-overlay">Version 1.0</div>
+      // Check if WebXR is supported
+      if (!navigator.xr) {
+        alert("WebXR not supported on this device.");
+        throw new Error("WebXR not supported");
+      }
 
-    <a-scene
-        vr-mode-ui="enabled: false"
-		embedded
-        arjs='sourceType: webcam; sourceWidth:1280; sourceHeight:960; displayWidth: 1280; displayHeight: 960; debugUIEnabled: false;'>
-		
-		<a-entity gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb" rotation="0 0 0" scale="2 2 2" gps-entity-place="longitude: 33.473504; latitude: -84.131005;" animation-mixer/>
-        
-        <a-camera gps-camera rotation-reader></a-camera>
-	</a-scene>
-</body>
+      // Start AR session
+      document.getElementById("startButton").addEventListener("click", async () => {
+        try {
+          xrSession = await navigator.xr.requestSession("immersive-ar", {
+            requiredFeatures: ["hit-test", "local"]
+          });
+
+          xrViewer = new XRViewer({ xrSession });
+          await xrViewer.start();
+        } catch (error) {
+          console.error("Failed to start AR session: ", error);
+        }
+      });
+
+      // Handle hit testing and surface detection
+      class XRViewer {
+        constructor(options) {
+          this.xrSession = options.xrSession;
+          this.xrSession.addEventListener("end", this.onSessionEnd);
+        }
+
+        async start() {
+          const canvas = document.getElementById("canvas");
+          const gl = canvas.getContext("webgl");
+          const xrReferenceSpace = await this.xrSession.requestReferenceSpace("local");
+
+          // Create AR hit-test source
+          const hitTestSource = await this.xrSession.requestHitTestSource({
+            space: xrReferenceSpace,
+          });
+
+          // Start rendering loop for WebXR
+          this.xrSession.requestAnimationFrame(this.render.bind(this, hitTestSource, gl));
+        }
+
+        async render(hitTestSource, gl) {
+          const hitTestResults = await hitTestSource.requestHitTest(
+            new XRPoint(0, 0),
+            this.xrSession.baseLayer.renderState
+          );
+
+          if (hitTestResults.length > 0) {
+            // Handle surface detection
+            const hitPose = hitTestResults[0].getPose(xrReferenceSpace);
+            this.placeModelOnSurface(hitPose, gl);
+          }
+
+          this.xrSession.requestAnimationFrame(this.render.bind(this, hitTestSource, gl));
+        }
+
+        placeModelOnSurface(hitPose, gl) {
+          // Implement code to place a 3D model at the detected position
+          console.log("Detected Surface:", hitPose);
+        }
+
+        onSessionEnd() {
+          console.log("AR session ended.");
+        }
+      }
+    </script>
+  </body>
+</html>
