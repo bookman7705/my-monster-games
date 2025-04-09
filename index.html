@@ -1,88 +1,60 @@
-<!DOCTYPE html>
+<!LAST WORKING html>
 <html lang="en">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WebXR Markerless AR Example</title>
-    <style>
-      body { margin: 0; }
-      #canvas { display: block; width: 100%; height: 100%; }
+    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
+
+
+	<style>
+      /* Style for the version text overlay */
+      .version-overlay {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        font-size: 20px;
+        color: red;
+        font-family: Arial, sans-serif;
+        background-color: rgba(0, 0, 0, 0.5); /* Optional, adds a slight transparent background */
+        padding: 5px;
+        border-radius: 5px;
+      }
     </style>
-  </head>
-  <body>
-    <button id="startButton">Start AR</button>
-    <canvas id="canvas"></canvas>
 
-    <script>
-      // Initialize WebXR session and AR features
-      let xrSession = null;
-      let xrViewer = null;
 
-      // Check if WebXR is supported
-      if (!navigator.xr) {
-        alert("WebXR not supported on this device.");
-        throw new Error("WebXR not supported");
-      }
+      </head>
+  <body style="margin: 0; overflow: hidden">
 
-      // Start AR session
-      document.getElementById("startButton").addEventListener("click", async () => {
-        try {
-          xrSession = await navigator.xr.requestSession("immersive-ar", {
-            requiredFeatures: ["hit-test", "local"]
-          });
+	<!-- Version overlay text -->
+    <div class="version-overlay">Version 2.0</div>
+  
+  
+    <div class="arjs-loader" id="loader">
+      <div>Loading, please wait...</div>
+    </div>
 
-          xrViewer = new XRViewer({ xrSession });
-          await xrViewer.start();
-        } catch (error) {
-          console.error("Failed to start AR session: ", error);
-        }
-      });
+    <a-scene
+      embedded
+      vr-mode-ui="enabled: false"
+      renderer="logarithmicDepthBuffer: true; precision: medium"
+      arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+    >
+      <a-marker
+        type="pattern"
+        url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
+      >
+        <a-entity
+		  gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
+		  scale="1 1 1"
+		  position="0 0 0"
+		  rotation="0 0 0"
+		  animation-mixer
+		></a-entity>
+      </a-marker>
+	  
+      <a-entity camera></a-entity>
+    </a-scene>
 
-      // Handle hit testing and surface detection
-      class XRViewer {
-        constructor(options) {
-          this.xrSession = options.xrSession;
-          this.xrSession.addEventListener("end", this.onSessionEnd);
-        }
-
-        async start() {
-          const canvas = document.getElementById("canvas");
-          const gl = canvas.getContext("webgl");
-          const xrReferenceSpace = await this.xrSession.requestReferenceSpace("local");
-
-          // Create AR hit-test source
-          const hitTestSource = await this.xrSession.requestHitTestSource({
-            space: xrReferenceSpace,
-          });
-
-          // Start rendering loop for WebXR
-          this.xrSession.requestAnimationFrame(this.render.bind(this, hitTestSource, gl));
-        }
-
-        async render(hitTestSource, gl) {
-          const hitTestResults = await hitTestSource.requestHitTest(
-            new XRPoint(0, 0),
-            this.xrSession.baseLayer.renderState
-          );
-
-          if (hitTestResults.length > 0) {
-            // Handle surface detection
-            const hitPose = hitTestResults[0].getPose(xrReferenceSpace);
-            this.placeModelOnSurface(hitPose, gl);
-          }
-
-          this.xrSession.requestAnimationFrame(this.render.bind(this, hitTestSource, gl));
-        }
-
-        placeModelOnSurface(hitPose, gl) {
-          // Implement code to place a 3D model at the detected position
-          console.log("Detected Surface:", hitPose);
-        }
-
-        onSessionEnd() {
-          console.log("AR session ended.");
-        }
-      }
-    </script>
+    
+<script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
   </body>
 </html>
