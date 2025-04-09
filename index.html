@@ -1,11 +1,9 @@
-<!LAST WORKING html>
 <html lang="en">
   <head>
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
     <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
 
-
-	<style>
+    <style>
       /* Style for the version text overlay */
       .version-overlay {
         position: fixed;
@@ -19,14 +17,10 @@
         border-radius: 5px;
       }
     </style>
-
-
-      </head>
+  </head>
   <body style="margin: 0; overflow: hidden">
-
-	<!-- Version overlay text -->
-    <div class="version-overlay">Version 2.0</div>
-  
+    <!-- Version overlay text -->
+    <div class="version-overlay">Version 1.0</div>
   
     <div class="arjs-loader" id="loader">
       <div>Loading, please wait...</div>
@@ -42,27 +36,29 @@
         type="pattern"
         url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
       >
+        <!-- First monster -->
         <a-entity
-		  gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
-		  scale="0.5 0.5 0.5"
-		  position="0 10 0"
-		  rotation="0 0 0"
-		  animation-mixer
-		></a-entity>
-		
-		<a-entity
-		  gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_glaceon.glb"
-		  scale="0.5 0.5 0.5"
-		  position="0 -10 0"
-		  rotation="0 180 0"
-		  animation-mixer
-		></a-entity>
+          gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
+          scale="0.5 0.5 0.5"
+          position="0 0 0"
+          rotation="0 0 0"
+          animation-mixer
+        ></a-entity>
+
+        <!-- Second monster facing the first -->
+        <a-entity
+          gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/pokedex_3d_pro_leafeon.glb"
+          scale="0.5 0.5 0.5"
+          position="2 0 0" <!-- Position the second monster along the X-axis -->
+          rotation="0 180 0" <!-- Rotate the second monster to face the first -->
+          animation-mixer
+        ></a-entity>
+        
       </a-marker>
-	  
+    
       <a-entity camera></a-entity>
     </a-scene>
 
-    
-<script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
   </body>
 </html>
