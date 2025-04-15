@@ -1,0 +1,87 @@
+<html lang="en">
+  <head>
+    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+    <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
+
+    <style>
+      /* Style for the version text overlay */
+      .version-overlay {
+        position: fixed;
+        top: 10px;
+        right: 10px;
+        font-size: 20px;
+        color: red;
+        font-family: Arial, sans-serif;
+        background-color: rgba(0, 0, 0, 0.5); /* Optional, adds a slight transparent background */
+        padding: 5px;
+        border-radius: 5px;
+      }
+    </style>
+  </head>
+  <body style="margin: 0; overflow: hidden">
+    <!-- Version overlay text -->
+    <div class="version-overlay">Version 4.0</div>
+  
+    <div class="arjs-loader" id="loader">
+      <div>Loading, please wait...</div>
+    </div>
+
+    <a-scene
+      embedded
+      vr-mode-ui="enabled: false"
+      renderer="logarithmicDepthBuffer: true; precision: medium"
+      arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
+    >
+      
+	  
+		 <!-- Ambient Light: Soft overall lighting -->
+		<a-light type="ambient" intensity="1.0" color="#ffffff"></a-light>
+
+	  
+        <a-entity
+		  id="earth"
+		  gltf-model="url_to_earth.glb"
+		  scale="1 1 1"
+		  rotation="0 0 0"
+		  animation="property: rotation; to: 0 360 0; loop: true; dur: 10000"
+		></a-entity>
+		
+		
+		<a-entity id="moon-orbit" rotation="0 0 0" animation="property: rotation; to: 0 360 0; loop: true; dur: 20000">
+		  <a-entity
+			id="moon"
+			gltf-model="url_to_moon.glb"
+			position="2 0 0"  <!-- Distance from Earth -->
+			scale="0.5 0.5 0.5"
+		  ></a-entity>
+		</a-entity>
+		
+		<a-marker type="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
+		  <!-- Earth rotating -->
+		  <a-entity
+			id="earth"
+			gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/earth.glb"
+			scale="1 1 1"
+			rotation="0 0 0"
+			animation="property: rotation; to: 0 360 0; loop: true; dur: 10000"
+		  ></a-entity>
+
+		  <!-- Moon orbiting -->
+		  <a-entity id="moon-orbit" rotation="0 0 0" animation="property: rotation; to: 0 360 0; loop: true; dur: 20000">
+			<a-entity
+			  id="moon"
+			  gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/moon.glb"
+			  position="2 0 0"
+			  scale="0.25 0.25 0.25"
+			></a-entity>
+		  </a-entity>
+		</a-marker>
+        
+      
+    
+      <a-entity camera></a-entity>
+    </a-scene>
+
+    <script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
+  </body>
+</html>
