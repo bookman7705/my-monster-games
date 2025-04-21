@@ -41,7 +41,7 @@
 		<a-light type="ambient" intensity="1.0" color="#ffffff"></a-light>
 
 	  
-        <!-- First monster -->
+        <!-- Rex monster -->
         <a-entity
           gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/rex3.glb"
           scale="1 1 1"
@@ -73,5 +73,26 @@
     </a-scene>
 
     <script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
+	
+	
+	<script>
+  async function loadMonsterConfig() {
+    try {
+      const response = await fetch('https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/rex-config.json');
+      const config = await response.json();
+
+      const monster = document.querySelector('[gltf-model]');
+      monster.setAttribute("scale", config.scale);
+      monster.setAttribute("position", config.position);
+      monster.setAttribute("rotation", config.rotation);
+    } catch (error) {
+      console.error('Failed to load monster config:', error);
+    }
+  }
+
+  window.addEventListener('DOMContentLoaded', loadMonsterConfig);
+</script>
+	
+	
   </body>
 </html>
