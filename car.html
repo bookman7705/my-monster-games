@@ -12,7 +12,7 @@
         font-size: 20px;
         color: red;
         font-family: Arial, sans-serif;
-        background-color: rgba(0, 0, 0, 0.5); /* Optional, adds a slight transparent background */
+        background-color: rgba(0, 0, 0, 0.5);
         padding: 5px;
         border-radius: 5px;
       }
@@ -20,7 +20,7 @@
   </head>
   <body style="margin: 0; overflow: hidden">
     <!-- Version overlay text -->
-    <div class="version-overlay">Version 6.0</div>
+    <div class="version-overlay">Version 7.0</div>
   
     <div class="arjs-loader" id="loader">
       <div>Loading, please wait...</div>
@@ -44,7 +44,7 @@
 
         <!-- Glowing Sphere with Point Light -->
         <a-entity
-          position="0 2 0"  <!-- Position the sphere just above the car -->
+          position="0 2 0"
         >
           <!-- Glowing sphere -->
           <a-sphere
@@ -82,6 +82,24 @@
     </a-scene>
 
     <script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
+
+    <script>
+      async function loadMonsterConfig() {
+        try {
+          const response = await fetch('https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/car-config.json');
+          const config = await response.json();
+
+          const car = document.querySelector('[gltf-model]');
+          car.setAttribute("scale", config.scale);
+          car.setAttribute("position", config.position);
+          car.setAttribute("rotation", config.rotation);
+        } catch (error) {
+          console.error('Failed to load car config:', error);
+        }
+      }
+
+      window.addEventListener('DOMContentLoaded', loadMonsterConfig);
+    </script>
   
   </body>
 </html>
