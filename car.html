@@ -1,7 +1,7 @@
 <html lang="en">
   <head>
     <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
-    <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
+    <script src="https://raw.githubusercontent.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
 
     <style>
       /* Style for the version text overlay */
@@ -20,7 +20,7 @@
   </head>
   <body style="margin: 0; overflow: hidden">
     <!-- Version overlay text -->
-    <div class="version-overlay">Version 3.0</div>
+    <div class="version-overlay">Version 4.0</div>
   
     <div class="arjs-loader" id="loader">
       <div>Loading, please wait...</div>
@@ -36,31 +36,52 @@
         type="pattern"
         url="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
       >
-	  
-		<!-- Ambient Light -->
-		<a-light type="ambient" intensity="0.8" color="#ffffff"></a-light>
-		  
-		<!-- Directional Light -->
-		<a-light type="directional" intensity="1.5" color="#ffffff" position="2 4 1"></a-light>
+        <!-- Ambient Light -->
+        <a-light type="ambient" intensity="0.8" color="#ffffff"></a-light>
+        
+        <!-- Directional Light -->
+        <a-light type="directional" intensity="1.5" color="#ffffff" position="0 0 0"></a-light>
 
-	  
+        <!-- Glowing Sphere with Point Light -->
+        <a-entity
+          position="0 2 0"  <!-- Position the sphere just above the car -->
+        >
+          <!-- Glowing sphere -->
+          <a-sphere
+            radius="0.5"
+            color="#00ff00"  <!-- Green color -->
+            opacity="0.6"  <!-- Slightly transparent for a glowing effect -->
+            emissive="#00ff00"  <!-- Makes the sphere glow -->
+            emissive-intensity="1.5"
+          ></a-sphere>
+          
+          <!-- Point Light -->
+          <a-light
+            type="point"
+            intensity="1.0"
+            distance="5"
+            decay="2"
+            color="#ffffff"
+            position="0 2 0"
+            castShadow="true"
+          ></a-light>
+        </a-entity>
+
         <!-- Car -->
         <a-entity
           gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/mclaren.glb"
-          scale="1 1 1"
+          scale="0.75 0.75 0.75"
           position="0 0 0"
           rotation="0 0 0"
-		  animation-mixer
+          animation-mixer
         ></a-entity>
-		<!-- animation-mixer -->
-        
+
       </a-marker>
     
       <a-entity camera></a-entity>
     </a-scene>
 
     <script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
-	
-	
+  
   </body>
 </html>
