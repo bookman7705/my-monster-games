@@ -46,9 +46,17 @@
 
 <div id="info">Tap the button below to <strong>View in AR</strong>, then tap a horizontal surface to place the T-Rex 🦖</div>
 
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/"
+  }
+}
+</script>
 <script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js';
-import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 let camera, scene, renderer;
 let controller, reticle;
