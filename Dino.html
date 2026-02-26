@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>WebXR AR T-Rex 1</title>
+<title>WebXR AR T-Rex 2</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <!-- WebXR requires HTTPS (or localhost) on Android -->
 <style>
@@ -144,7 +144,7 @@ function init() {
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex3.glb',
     function (gltf) {
       model = gltf.scene;
-      model.scale.set(0.0001, 0.0001, 0.0001);
+      model.scale.set(0, 0, 0);
       model.rotation.x = 0;
       model.rotation.z = 0;
 
