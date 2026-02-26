@@ -5,16 +5,16 @@
 <title>WebXR AR T-Rex</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <style>
-    body { margin: 0; overflow: hidden; }
-    #info {
-        position: absolute;
-        top: 20px;
-        width: 100%;
-        text-align: center;
-        color: white;
-        font-family: Arial;
-        z-index: 1;
-    }
+  body { margin: 0; overflow: hidden; }
+  #info {
+    position: absolute;
+    top: 20px;
+    width: 100%;
+    text-align: center;
+    color: white;
+    font-family: Arial;
+    z-index: 1;
+  }
 </style>
 </head>
 <body>
@@ -22,163 +22,123 @@
 <div id="info">Tap on a horizontal surface to place the T-Rex 🦖</div>
 
 <script type="module">
-
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js';
 import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/webxr/ARButton.js';
 import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js';
 
 let camera, scene, renderer;
-let controller;
-let reticle;
+let controller, reticle;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
-
-let model;
-let mixer;
+let model, mixer;
 const clock = new THREE.Clock();
 const loader = new GLTFLoader();
 
 init();
 
 function init() {
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera();
 
-    scene = new THREE.Scene();
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  document.body.appendChild(renderer.domElement);
 
-    camera = new THREE.PerspectiveCamera();
+  // AR Button: starts AR session
+  document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
 
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.xr.enabled = true;
-    document.body.appendChild(renderer.domElement);
+  // Light
+  const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+  scene.add(light);
 
-    document.body.appendChild(
-        ARButton.createButton(renderer, {
-            requiredFeatures: ['hit-test']
-        })
-    );
+  // Controller for tap events
+  controller = renderer.xr.getController(0);
+  controller.addEventListener('select', onSelect);
+  scene.add(controller);
 
-    // Lighting
-    const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
-    scene.add(light);
+  // Reticle (where model will spawn)
+  const geometry = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI/2);
+  const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+  reticle = new THREE.Mesh(geometry, material);
+  reticle.matrixAutoUpdate = false;
+  reticle.visible = false;
+  scene.add(reticle);
 
-    // Controller
-    controller = renderer.xr.getController(0);
-    controller.addEventListener('select', onSelect);
-    scene.add(controller);
+  // Load T-Rex GLB
+  loader.load(
+    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex3.glb',
+    function (gltf) {
+      model = gltf.scene;
+      model.scale.set(0.2, 0.2, 0.2);
+      model.rotation.x = 0;
+      model.rotation.z = 0;
 
-    // Reticle
-    const geometry = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
-    const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
-    reticle = new THREE.Mesh(geometry, material);
-    reticle.matrixAutoUpdate = false;
-    reticle.visible = false;
-    scene.add(reticle);
+      if (gltf.animations.length > 0) {
+        mixer = new THREE.AnimationMixer(model);
+        gltf.animations.forEach((clip) => mixer.clipAction(clip).play());
+      }
+    },
+    undefined,
+    (err) => console.error(err)
+  );
 
-    // Load GLB Model
-    loader.load(
-        'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex3.glb',
-        function (gltf) {
-
-            model = gltf.scene;
-            model.scale.set(0.2, 0.2, 0.2); // Adjust as needed
-
-            // Keep model upright
-            model.rotation.x = 0;
-            model.rotation.z = 0;
-
-            // Setup animation if available
-            if (gltf.animations.length > 0) {
-                mixer = new THREE.AnimationMixer(model);
-                gltf.animations.forEach((clip) => {
-                    mixer.clipAction(clip).play();
-                });
-            }
-
-        },
-        undefined,
-        function (error) {
-            console.error('Error loading model:', error);
-        }
-    );
-
-    renderer.setAnimationLoop(render);
+  renderer.setAnimationLoop(render);
 }
 
 function onSelect() {
-
-    if (reticle.visible && model) {
-
-        const clone = model.clone(true);
-
-        // Set position & rotation from reticle
-        clone.position.setFromMatrixPosition(reticle.matrix);
-        clone.quaternion.setFromRotationMatrix(reticle.matrix);
-
-        // Keep upright
-        clone.rotation.x = 0;
-        clone.rotation.z = 0;
-
-        scene.add(clone);
-    }
+  if (reticle.visible && model) {
+    const clone = model.clone(true);
+    clone.position.setFromMatrixPosition(reticle.matrix);
+    clone.quaternion.setFromRotationMatrix(reticle.matrix);
+    clone.rotation.x = 0;
+    clone.rotation.z = 0;
+    scene.add(clone);
+  }
 }
 
 function render(timestamp, frame) {
+  if (frame) {
+    const referenceSpace = renderer.xr.getReferenceSpace();
+    const session = renderer.xr.getSession();
 
-    if (frame) {
-
-        const referenceSpace = renderer.xr.getReferenceSpace();
-        const session = renderer.xr.getSession();
-
-        if (!hitTestSourceRequested) {
-
-            session.requestReferenceSpace('viewer').then(function (referenceSpace) {
-                session.requestHitTestSource({ space: referenceSpace }).then(function (source) {
-                    hitTestSource = source;
-                });
-            });
-
-            session.addEventListener('end', function () {
-                hitTestSourceRequested = false;
-                hitTestSource = null;
-            });
-
-            hitTestSourceRequested = true;
-        }
-
-        if (hitTestSource) {
-
-            const hitTestResults = frame.getHitTestResults(hitTestSource);
-
-            reticle.visible = false;
-
-            for (let hit of hitTestResults) {
-
-                const pose = hit.getPose(referenceSpace);
-                const matrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
-
-                // Extract surface normal (Y axis)
-                const normal = new THREE.Vector3(0, 1, 0);
-                normal.applyMatrix4(matrix).sub(
-                    new THREE.Vector3().setFromMatrixPosition(matrix)
-                ).normalize();
-
-                // Only allow horizontal surfaces
-                if (normal.y > 0.75) {
-                    reticle.visible = true;
-                    reticle.matrix.fromArray(pose.transform.matrix);
-                    break; // first valid horizontal hit
-                }
-            }
-        }
+    if (!hitTestSourceRequested) {
+      session.requestReferenceSpace('viewer').then((refSpace) => {
+        session.requestHitTestSource({ space: refSpace }).then((source) => hitTestSource = source);
+      });
+      session.addEventListener('end', () => {
+        hitTestSourceRequested = false;
+        hitTestSource = null;
+      });
+      hitTestSourceRequested = true;
     }
 
-    // Update animations
-    const delta = clock.getDelta();
-    if (mixer) mixer.update(delta);
+    if (hitTestSource) {
+      const hitTestResults = frame.getHitTestResults(hitTestSource);
+      reticle.visible = false;
 
-    renderer.render(scene, camera);
+      for (let hit of hitTestResults) {
+        const pose = hit.getPose(referenceSpace);
+        const matrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
+
+        // Filter for horizontal surfaces only
+        const normal = new THREE.Vector3(0,1,0).applyMatrix4(matrix)
+                         .sub(new THREE.Vector3().setFromMatrixPosition(matrix))
+                         .normalize();
+        if (normal.y > 0.75) {
+          reticle.visible = true;
+          reticle.matrix.fromArray(pose.transform.matrix);
+          break;
+        }
+      }
+    }
+  }
+
+  const delta = clock.getDelta();
+  if (mixer) mixer.update(delta);
+
+  renderer.render(scene, camera);
 }
-
 </script>
 </body>
 </html>
