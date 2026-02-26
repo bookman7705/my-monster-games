@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>WebXR AR T-Rex 5</title>
+<title>WebXR AR T-Rex 7</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <!-- WebXR requires HTTPS (or localhost) on Android -->
 <style>
@@ -144,11 +144,11 @@ function init() {
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex3.glb',
     function (gltf) {
       model = gltf.scene;
-      // Auto-scale model to a reasonable real-world size (~0.5m tall)
+      // Auto-scale model to a reasonable real-world size (~1.5m tall)
       const box = new THREE.Box3().setFromObject(model);
       const size = new THREE.Vector3();
       box.getSize(size);
-      const desiredHeight = 0.5; // meters
+      const desiredHeight = 1.5; // meters
       const scaleFactor = size.y > 0 ? desiredHeight / size.y : 1;
       model.scale.setScalar(scaleFactor);
       model.rotation.x = 0;
@@ -167,16 +167,29 @@ function init() {
 }
 
 function onSelect() {
-  if (reticle.visible && model) {
-    const clone = model.clone(true);
-    // Ensure clone keeps the scaled size (extra safety)
-    clone.scale.copy(model.scale);
+  if (!model) return;
+
+  const clone = model.clone(true);
+  // Ensure clone keeps the scaled size (extra safety)
+  clone.scale.copy(model.scale);
+
+  if (reticle.visible) {
+    // Preferred: place on detected plane
     clone.position.setFromMatrixPosition(reticle.matrix);
     clone.quaternion.setFromRotationMatrix(reticle.matrix);
-    clone.rotation.x = 0;
-    clone.rotation.z = 0;
-    scene.add(clone);
+  } else {
+    // Fallback: place ~1.5m in front of the camera at camera height
+    const cam = renderer.xr.getCamera
+      ? renderer.xr.getCamera(camera)
+      : camera;
+    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+    const camPos = new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
+    clone.position.copy(camPos).add(dir.multiplyScalar(1.5));
   }
+
+  clone.rotation.x = 0;
+  clone.rotation.z = 0;
+  scene.add(clone);
 }
 
 function render(timestamp, frame) {
