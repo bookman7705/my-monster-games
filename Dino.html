@@ -1,10 +1,14 @@
-<!DOCTYPE html> 
-<html lang="en"> 
-  <head> 
-    <meta charset="utf-8"> 
-    <title>Island Viewer AR 3</title> 
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
-    <style> body { margin: 0; overflow: hidden; background: #111; } </style> </head> <body>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Island Viewer AR 4</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; }
+  </style>
+</head>
+<body>
 
 <script type="module">
 import * as THREE from 'three';
@@ -15,16 +19,18 @@ let scene, camera, renderer;
 let reticle;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
-let model1 = null, model2 = null;  // Separate variables for each model
-let mixer1 = null, mixer2 = null;  // Separate mixers for each model
+let model1 = null, model2 = null;
+let mixer1 = null, mixer2 = null;
 const clock = new THREE.Clock();
 
 init();
 animate();
 
 function init() {
+  // Scene setup
   scene = new THREE.Scene();
 
+  // Camera setup
   camera = new THREE.PerspectiveCamera(
     60,
     window.innerWidth / window.innerHeight,
@@ -32,13 +38,14 @@ function init() {
     100
   );
 
+  // WebGL renderer setup
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.xr.enabled = true;
+  renderer.xr.enabled = true; // Enable WebXR (AR) support
   document.body.appendChild(renderer.domElement);
 
-  // Lighting
+  // Lighting setup
   const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
   scene.add(hemiLight);
 
@@ -53,7 +60,7 @@ function init() {
     (gltf) => {
       model1 = gltf.scene;
       model1.scale.set(1, 1, 1);  // scale 1:1
-      //model1.position.set(2, 0, -5);  // Set model1 position at (x=2, y=0, z=-5)
+      model1.position.set(2, 0, -5);  // Set model1 position at (x=2, y=0, z=-5)
       model1.visible = false;
       scene.add(model1);
 
@@ -91,7 +98,7 @@ function init() {
     (error) => console.error('Error loading Pistosaur model:', error)
   );
 
-  // Reticle
+  // Reticle setup (indicator for where the model will be placed in AR)
   const geometry = new THREE.RingGeometry(0.25, 0.3, 32);
   geometry.rotateX(-Math.PI / 2);
   const material = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
@@ -100,32 +107,33 @@ function init() {
   reticle.visible = false;
   scene.add(reticle);
 
-  // AR Button
-  document.body.appendChild(ARButton.createButton(renderer, {
-    requiredFeatures: ['hit-test', 'local-floor']
-  }));
+  // AR Button setup: Makes the page AR-capable (trigger WebXR)
+  const arButton = ARButton.createButton(renderer, {
+    requiredFeatures: ['hit-test', 'local-floor'] // Features needed for AR
+  });
+  document.body.appendChild(arButton); // Append AR button to the body
 
-  // Controller
+  // Controller setup for interaction
   const controller = renderer.xr.getController(0);
   controller.addEventListener('select', onSelect);
   scene.add(controller);
 
+  // Window resize listener
   window.addEventListener('resize', onWindowResize);
 }
 
 function onSelect() {
   if (reticle.visible) {
-    // Set model1's position based on the reticle's position
+    // Place model1 based on the reticle's position
     if (model1) {
       model1.visible = true;
       model1.position.setFromMatrixPosition(reticle.matrix);
       model1.quaternion.setFromRotationMatrix(reticle.matrix);
     }
 
-    // Set model2's position relative to model1
+    // Place model2 relative to model1's position
     if (model2 && model1) {
       model2.visible = true;
-      // Here, model2's position is relative to model1's position
       model2.position.set(model1.position.x + 2, model1.position.y, model1.position.z);
       model2.quaternion.setFromRotationMatrix(reticle.matrix);
     }
@@ -185,5 +193,5 @@ function render(timestamp, frame) {
 }
 </script>
 
-      </body> 
+</body>
 </html>
