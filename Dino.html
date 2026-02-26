@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>WebXR AR T-Rex</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<!-- WebXR requires HTTPS (or localhost) on Android -->
 <style>
   body { margin: 0; overflow: hidden; }
   #info {
@@ -14,12 +15,22 @@
     color: white;
     font-family: Arial;
     z-index: 1;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  }
+  #ARButton {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 14px 24px;
+    font-size: 16px;
+    z-index: 999;
   }
 </style>
 </head>
 <body>
 
-<div id="info">Tap on a horizontal surface to place the T-Rex 🦖</div>
+<div id="info">Tap the button below to <strong>View in AR</strong>, then tap a horizontal surface to place the T-Rex 🦖</div>
 
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js';
@@ -45,8 +56,10 @@ function init() {
   renderer.xr.enabled = true;
   document.body.appendChild(renderer.domElement);
 
-  // AR Button: starts AR session
-  document.body.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
+  // AR Button: use optionalFeatures so session starts even if hit-test unavailable (camera still activates)
+  const arBtn = ARButton.createButton(renderer, { optionalFeatures: ['hit-test'] });
+  document.body.appendChild(arBtn);
+  arBtn.textContent = 'View in AR';
 
   // Light
   const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
@@ -103,9 +116,11 @@ function render(timestamp, frame) {
     const session = renderer.xr.getSession();
 
     if (!hitTestSourceRequested) {
-      session.requestReferenceSpace('viewer').then((refSpace) => {
-        session.requestHitTestSource({ space: refSpace }).then((source) => hitTestSource = source);
-      });
+      session.requestReferenceSpace('viewer').then((refSpace) =>
+        session.requestHitTestSource({ space: refSpace })
+      ).then((source) => {
+        if (source) hitTestSource = source;
+      }).catch(() => { /* hit-test not available; AR still works, just no plane placement */ });
       session.addEventListener('end', () => {
         hitTestSourceRequested = false;
         hitTestSource = null;
@@ -113,18 +128,17 @@ function render(timestamp, frame) {
       hitTestSourceRequested = true;
     }
 
-    if (hitTestSource) {
+    if (hitTestSource && referenceSpace) {
       const hitTestResults = frame.getHitTestResults(hitTestSource);
       reticle.visible = false;
 
       for (let hit of hitTestResults) {
         const pose = hit.getPose(referenceSpace);
+        if (!pose) continue;
         const matrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
 
-        // Filter for horizontal surfaces only
-        const normal = new THREE.Vector3(0,1,0).applyMatrix4(matrix)
-                         .sub(new THREE.Vector3().setFromMatrixPosition(matrix))
-                         .normalize();
+        // Filter for horizontal surfaces: up direction of hit pose (Y axis of matrix)
+        const normal = new THREE.Vector3(0, 1, 0).transformDirection(matrix);
         if (normal.y > 0.75) {
           reticle.visible = true;
           reticle.matrix.fromArray(pose.transform.matrix);
