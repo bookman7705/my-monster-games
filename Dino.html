@@ -2,29 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>T-Rex AR 3</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>T-Rex Viewer (Scale 1)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  body { margin: 0; overflow: hidden; }
-  .ar-btn {
-    position: absolute;
-    bottom: 30px;
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 14px 28px;
-    font-size: 18px;
-    font-weight: bold;
-    z-index: 10;
-    border: 2px solid white;
-    border-radius: 8px;
-    background: rgba(0,120,215,0.9);
-    color: white;
-  }
+  body { margin: 0; overflow: hidden; background: #111; }
 </style>
 </head>
 <body>
-
-<button class="ar-btn">View in AR</button>
 
 <script type="importmap">
 {
@@ -38,153 +22,138 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { ARButton } from 'three/addons/webxr/ARButton.js';
 
-let camera, scene, renderer;
-let controller, reticle;
+let scene, camera, renderer;
+let reticle;
 let hitTestSource = null;
-let hitTestRequested = false;
-let model;
-let currentSession = null;
+let hitTestSourceRequested = false;
+let model = null;
 
 init();
+animate();
 
 function init() {
 
   scene = new THREE.Scene();
-  camera = new THREE.PerspectiveCamera();
+
+  camera = new THREE.PerspectiveCamera(
+    60,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    100
+  );
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.xr.enabled = true;
   document.body.appendChild(renderer.domElement);
 
-  const button = document.querySelector('.ar-btn');
+  // Basic lighting so the model is visible in AR
+  const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+  scene.add(hemiLight);
 
-  button.addEventListener('click', async () => {
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight.position.set(5, 10, 2);
+  scene.add(dirLight);
 
-    if (!navigator.xr) {
-      alert("WebXR not supported on this device.");
-      return;
+  // Load the T-Rex model
+  const loader = new GLTFLoader();
+  loader.load(
+    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex3.glb',
+    (gltf) => {
+      model = gltf.scene;
+      // Explicitly keep scale 1:1 (real size)
+      model.scale.set(1, 1, 1);
+      model.visible = false; // Only show after placed on a plane
+      scene.add(model);
+    },
+    undefined,
+    (error) => {
+      console.error('Error loading model:', error);
     }
+  );
 
-    const supported = await navigator.xr.isSessionSupported('immersive-ar');
-    if (!supported) {
-      alert("AR not supported on this device.");
-      return;
-    }
-
-    const session = await navigator.xr.requestSession('immersive-ar', {
-      requiredFeatures: ['hit-test']
-    });
-
-    currentSession = session;
-
-    session.addEventListener('end', () => {
-      currentSession = null;
-      button.style.display = "block";
-    });
-
-    renderer.xr.setReferenceSpaceType('local');
-    await renderer.xr.setSession(session);
-
-    button.style.display = "none";
-  });
-
-  // Light
-  const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
-  scene.add(light);
-
-  // Controller
-  controller = renderer.xr.getController(0);
-  controller.addEventListener('select', onSelect);
-  scene.add(controller);
-
-  // Reticle (placement indicator)
-  const geometry = new THREE.RingGeometry(0.2, 0.25, 32).rotateX(-Math.PI / 2);
-  const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+  // Reticle that shows detected plane position
+  const geometry = new THREE.RingGeometry(0.25, 0.3, 32);
+  geometry.rotateX(-Math.PI / 2);
+  const material = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
   reticle = new THREE.Mesh(geometry, material);
   reticle.matrixAutoUpdate = false;
   reticle.visible = false;
   scene.add(reticle);
 
-  // Load model
-  const loader = new GLTFLoader();
-  loader.load(
-    'https://github.com/bookman7705/my-monster-games/blob/main/RexSmall.glb',
-    (gltf) => {
-      model = gltf.scene;
+  // AR button – marker-free, plane-based hit-test (floors/tables)
+  const arButton = ARButton.createButton(renderer, {
+    requiredFeatures: ['hit-test', 'local-floor']
+  });
+  document.body.appendChild(arButton);
 
-      // 🔹 Keep original scale
-      model.scale.set(1,1,1);
-    }
-  );
+  // Tap to place the model on the detected plane
+  const controller = renderer.xr.getController(0);
+  controller.addEventListener('select', onSelect);
+  scene.add(controller);
 
-  renderer.setAnimationLoop(render);
+  window.addEventListener('resize', onWindowResize);
 }
 
 function onSelect() {
-
   if (reticle.visible && model) {
-
-    const clone = model.clone(true);
-
-    clone.position.setFromMatrixPosition(reticle.matrix);
-    clone.quaternion.setFromRotationMatrix(reticle.matrix);
-
-    scene.add(clone);
+    model.visible = true;
+    model.position.setFromMatrixPosition(reticle.matrix);
+    model.quaternion.setFromRotationMatrix(reticle.matrix);
   }
 }
 
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+  renderer.setAnimationLoop(render);
+}
+
 function render(timestamp, frame) {
-
   if (frame) {
-
-    const session = renderer.xr.getSession();
     const referenceSpace = renderer.xr.getReferenceSpace();
+    const session = renderer.xr.getSession();
 
-    if (!hitTestRequested) {
-
-      session.requestReferenceSpace('viewer').then((space) => {
-        session.requestHitTestSource({ space: space }).then((source) => {
+    if (!hitTestSourceRequested) {
+      session.requestReferenceSpace('viewer').then((viewerSpace) => {
+        session.requestHitTestSource({ space: viewerSpace }).then((source) => {
           hitTestSource = source;
         });
       });
 
       session.addEventListener('end', () => {
-        hitTestRequested = false;
+        hitTestSourceRequested = false;
         hitTestSource = null;
       });
 
-      hitTestRequested = true;
+      hitTestSourceRequested = true;
     }
 
     if (hitTestSource) {
+      const hitTestResults = frame.getHitTestResults(hitTestSource);
 
-      const hitResults = frame.getHitTestResults(hitTestSource);
-      reticle.visible = false;
-
-      for (let hit of hitResults) {
-
+      if (hitTestResults.length) {
+        const hit = hitTestResults[0];
         const pose = hit.getPose(referenceSpace);
-        if (!pose) continue;
 
-        const matrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
-
-        // Only allow horizontal surfaces
-        const normal = new THREE.Vector3(0,1,0).transformDirection(matrix);
-        if (normal.y > 0.75) {
-
-          reticle.visible = true;
-          reticle.matrix.fromArray(pose.transform.matrix);
-          break;
-        }
+        reticle.visible = true;
+        reticle.matrix.fromArray(pose.transform.matrix);
+      } else {
+        reticle.visible = false;
       }
     }
   }
 
   renderer.render(scene, camera);
 }
-
 </script>
+
 </body>
 </html>
