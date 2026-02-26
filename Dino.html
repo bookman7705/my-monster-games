@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>T-Rex Viewer (Scale 1)</title>
+<title>Island Viewer AR</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   body { margin: 0; overflow: hidden; background: #111; }
@@ -29,12 +29,13 @@ let reticle;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
 let model = null;
+let mixer = null;
+const clock = new THREE.Clock();
 
 init();
 animate();
 
 function init() {
-
   scene = new THREE.Scene();
 
   camera = new THREE.PerspectiveCamera(
@@ -50,7 +51,7 @@ function init() {
   renderer.xr.enabled = true;
   document.body.appendChild(renderer.domElement);
 
-  // Basic lighting so the model is visible in AR
+  // Lighting
   const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
   scene.add(hemiLight);
 
@@ -58,24 +59,29 @@ function init() {
   dirLight.position.set(5, 10, 2);
   scene.add(dirLight);
 
-  // Load the T-Rex model
+  // Load GLB model
   const loader = new GLTFLoader();
   loader.load(
-    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex3.glb',
+    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Island2.glb',
     (gltf) => {
       model = gltf.scene;
-      // Explicitly keep scale 1:1 (real size)
-      model.scale.set(1, 1, 1);
-      model.visible = false; // Only show after placed on a plane
+      model.scale.set(1, 1, 1);  // scale 1:1
+      model.visible = false;
       scene.add(model);
+
+      // Animation support
+      if (gltf.animations.length > 0) {
+        mixer = new THREE.AnimationMixer(model);
+        gltf.animations.forEach((clip) => {
+          mixer.clipAction(clip).play();
+        });
+      }
     },
     undefined,
-    (error) => {
-      console.error('Error loading model:', error);
-    }
+    (error) => console.error('Error loading model:', error)
   );
 
-  // Reticle that shows detected plane position
+  // Reticle
   const geometry = new THREE.RingGeometry(0.25, 0.3, 32);
   geometry.rotateX(-Math.PI / 2);
   const material = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
@@ -84,13 +90,12 @@ function init() {
   reticle.visible = false;
   scene.add(reticle);
 
-  // AR button – marker-free, plane-based hit-test (floors/tables)
-  const arButton = ARButton.createButton(renderer, {
+  // AR Button
+  document.body.appendChild(ARButton.createButton(renderer, {
     requiredFeatures: ['hit-test', 'local-floor']
-  });
-  document.body.appendChild(arButton);
+  }));
 
-  // Tap to place the model on the detected plane
+  // Controller
   const controller = renderer.xr.getController(0);
   controller.addEventListener('select', onSelect);
   scene.add(controller);
@@ -117,6 +122,9 @@ function animate() {
 }
 
 function render(timestamp, frame) {
+  const delta = clock.getDelta();
+  if (mixer) mixer.update(delta);
+
   if (frame) {
     const referenceSpace = renderer.xr.getReferenceSpace();
     const session = renderer.xr.getSession();
