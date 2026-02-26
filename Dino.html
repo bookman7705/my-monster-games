@@ -1,3 +1,11 @@
+<!DOCTYPE html> 
+<html lang="en"> 
+  <head> 
+    <meta charset="utf-8"> 
+    <title>Island Viewer AR 3</title> 
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+    <style> body { margin: 0; overflow: hidden; background: #111; } </style> </head> <body>
+
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -45,6 +53,7 @@ function init() {
     (gltf) => {
       model1 = gltf.scene;
       model1.scale.set(1, 1, 1);  // scale 1:1
+      //model1.position.set(2, 0, -5);  // Set model1 position at (x=2, y=0, z=-5)
       model1.visible = false;
       scene.add(model1);
 
@@ -66,7 +75,6 @@ function init() {
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/pistosaur_animated.glb',
     (gltf) => {
       model2 = gltf.scene;
-      model2.position.set(0, 0, -5); // Set model2 at (x=-2, y=0, z=-5)
       model2.scale.set(1, 1, 1);  // scale 1:1
       model2.visible = false;
       scene.add(model2);
@@ -107,15 +115,18 @@ function init() {
 
 function onSelect() {
   if (reticle.visible) {
-    // Show the models when the reticle is visible and set their position
+    // Set model1's position based on the reticle's position
     if (model1) {
       model1.visible = true;
       model1.position.setFromMatrixPosition(reticle.matrix);
       model1.quaternion.setFromRotationMatrix(reticle.matrix);
     }
-    if (model2) {
+
+    // Set model2's position relative to model1
+    if (model2 && model1) {
       model2.visible = true;
-      model2.position.setFromMatrixPosition(reticle.matrix);
+      // Here, model2's position is relative to model1's position
+      model2.position.set(model1.position.x + 2, model1.position.y, model1.position.z);
       model2.quaternion.setFromRotationMatrix(reticle.matrix);
     }
   }
@@ -173,3 +184,6 @@ function render(timestamp, frame) {
   renderer.render(scene, camera);
 }
 </script>
+
+      </body> 
+</html>
