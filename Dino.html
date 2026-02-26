@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>WebXR AR T-Rex 1</title>
+<title>WebXR AR T-Rex 5</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<!-- WebXR requires HTTPS (or localhost) on Android -->
 <style>
   body { margin: 0; overflow: hidden; }
   #info {
@@ -25,6 +26,7 @@
     font-size: 18px;
     font-weight: bold;
     z-index: 999;
+    display: block;
     cursor: pointer;
     border: 2px solid #fff;
     border-radius: 8px;
@@ -36,12 +38,13 @@
     -webkit-tap-highlight-color: transparent;
   }
   .ar-btn:hover { background: rgba(0, 140, 255, 0.95); }
+  .ar-btn:disabled { opacity: 0.6; cursor: not-allowed; }
   .ar-btn.hidden { display: none !important; }
 </style>
 </head>
 <body>
 
-<div id="info">Tap "View in AR", then tap a horizontal surface to place the T-Rex 🦖</div>
+<div id="info">Tap the button below to <strong>View in AR</strong>, then tap a horizontal surface to place the T-Rex 🦖</div>
 
 <script type="importmap">
 {
@@ -51,7 +54,6 @@
   }
 }
 </script>
-
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -65,11 +67,6 @@ let currentSession = null;
 const clock = new THREE.Clock();
 const loader = new GLTFLoader();
 
-// Desired AR height in meters
-const TARGET_HEIGHT = 2.0;
-const BLENDER_HEIGHT = 1.18; // Z dimension from Blender
-const SCALE_FACTOR = TARGET_HEIGHT / BLENDER_HEIGHT;
-
 init();
 
 function init() {
@@ -81,10 +78,11 @@ function init() {
   renderer.xr.enabled = true;
   document.body.appendChild(renderer.domElement);
 
-  // AR Button
+  // Custom "View in AR" button – always visible so user always sees it
   const arBtn = document.createElement('button');
   arBtn.className = 'ar-btn';
   arBtn.textContent = 'View in AR';
+  arBtn.setAttribute('aria-label', 'Start AR experience');
   document.body.appendChild(arBtn);
 
   arBtn.addEventListener('click', async () => {
@@ -102,15 +100,18 @@ function init() {
         arBtn.textContent = 'AR not supported';
         return;
       }
-      const session = await navigator.xr.requestSession('immersive-ar', { optionalFeatures: ['hit-test'] });
+      const session = await navigator.xr.requestSession('immersive-ar', {
+        optionalFeatures: ['hit-test']
+      });
       currentSession = session;
       session.addEventListener('end', onSessionEnded);
       renderer.xr.setReferenceSpaceType('local');
       await renderer.xr.setSession(session);
-      arBtn.classList.add('hidden');
+      arBtn.textContent = 'Exit AR';
+      arBtn.classList.add('hidden'); // hide while in AR (fullscreen camera)
     } catch (err) {
       console.warn('AR session error', err);
-      arBtn.textContent = 'AR failed';
+      arBtn.textContent = 'AR failed – try again';
     }
   });
 
@@ -118,18 +119,19 @@ function init() {
     currentSession?.removeEventListener('end', onSessionEnded);
     currentSession = null;
     arBtn.classList.remove('hidden');
+    arBtn.textContent = 'View in AR';
   }
 
   // Light
   const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
   scene.add(light);
 
-  // Controller
+  // Controller for tap events
   controller = renderer.xr.getController(0);
   controller.addEventListener('select', onSelect);
   scene.add(controller);
 
-  // Reticle
+  // Reticle (where model will spawn)
   const geometry = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI/2);
   const material = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
   reticle = new THREE.Mesh(geometry, material);
@@ -140,13 +142,21 @@ function init() {
   // Load T-Rex GLB
   loader.load(
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex3.glb',
-    (gltf) => {
+    function (gltf) {
       model = gltf.scene;
+      // Auto-scale model to a reasonable real-world size (~0.5m tall)
+      const box = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const desiredHeight = 0.5; // meters
+      const scaleFactor = size.y > 0 ? desiredHeight / size.y : 1;
+      model.scale.setScalar(scaleFactor);
+      model.rotation.x = 0;
+      model.rotation.z = 0;
 
-      // Animations
       if (gltf.animations.length > 0) {
         mixer = new THREE.AnimationMixer(model);
-        gltf.animations.forEach(clip => mixer.clipAction(clip).play());
+        gltf.animations.forEach((clip) => mixer.clipAction(clip).play());
       }
     },
     undefined,
@@ -156,16 +166,11 @@ function init() {
   renderer.setAnimationLoop(render);
 }
 
-// Recursive scaling for all children
-function scaleModelRecursively(obj, factor) {
-  obj.scale.multiplyScalar(factor);
-  obj.children.forEach(child => scaleModelRecursively(child, factor));
-}
-
 function onSelect() {
   if (reticle.visible && model) {
     const clone = model.clone(true);
-    scaleModelRecursively(clone, SCALE_FACTOR);
+    // Ensure clone keeps the scaled size (extra safety)
+    clone.scale.copy(model.scale);
     clone.position.setFromMatrixPosition(reticle.matrix);
     clone.quaternion.setFromRotationMatrix(reticle.matrix);
     clone.rotation.x = 0;
@@ -180,11 +185,15 @@ function render(timestamp, frame) {
     const session = renderer.xr.getSession();
 
     if (!hitTestSourceRequested) {
-      session.requestReferenceSpace('viewer').then(refSpace =>
+      session.requestReferenceSpace('viewer').then((refSpace) =>
         session.requestHitTestSource({ space: refSpace })
-      ).then(source => { if (source) hitTestSource = source; })
-      .catch(() => { });
-      session.addEventListener('end', () => { hitTestSourceRequested = false; hitTestSource = null; });
+      ).then((source) => {
+        if (source) hitTestSource = source;
+      }).catch(() => { /* hit-test not available; AR still works, just no plane placement */ });
+      session.addEventListener('end', () => {
+        hitTestSourceRequested = false;
+        hitTestSource = null;
+      });
       hitTestSourceRequested = true;
     }
 
@@ -197,7 +206,7 @@ function render(timestamp, frame) {
         if (!pose) continue;
         const matrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
 
-        // Horizontal surface filter
+        // Filter for horizontal surfaces: up direction of hit pose (Y axis of matrix)
         const normal = new THREE.Vector3(0, 1, 0).transformDirection(matrix);
         if (normal.y > 0.75) {
           reticle.visible = true;
