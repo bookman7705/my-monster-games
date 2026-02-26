@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>WebXR AR T-Rex 4</title>
+<title>WebXR AR T-Rex 1</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <style>
   body { margin: 0; overflow: hidden; }
@@ -65,6 +65,11 @@ let currentSession = null;
 const clock = new THREE.Clock();
 const loader = new GLTFLoader();
 
+// Desired AR height in meters
+const TARGET_HEIGHT = 2.0;
+const BLENDER_HEIGHT = 1.18; // Z dimension from Blender
+const SCALE_FACTOR = TARGET_HEIGHT / BLENDER_HEIGHT;
+
 init();
 
 function init() {
@@ -102,7 +107,7 @@ function init() {
       session.addEventListener('end', onSessionEnded);
       renderer.xr.setReferenceSpaceType('local');
       await renderer.xr.setSession(session);
-      arBtn.classList.add('hidden'); // hide button in AR
+      arBtn.classList.add('hidden');
     } catch (err) {
       console.warn('AR session error', err);
       arBtn.textContent = 'AR failed';
@@ -132,20 +137,11 @@ function init() {
   reticle.visible = false;
   scene.add(reticle);
 
-  // Load T-Rex
+  // Load T-Rex GLB
   loader.load(
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex3.glb',
     (gltf) => {
       model = gltf.scene;
-
-      // Blender dimensions: 1.18m tall (Z)
-      const blenderHeight = 1.18;
-      const targetHeight = 2.0; // AR height in meters
-      const scaleFactor = targetHeight / blenderHeight;
-      model.scale.setScalar(scaleFactor);
-
-      model.rotation.x = 0;
-      model.rotation.z = 0;
 
       // Animations
       if (gltf.animations.length > 0) {
@@ -160,9 +156,16 @@ function init() {
   renderer.setAnimationLoop(render);
 }
 
+// Recursive scaling for all children
+function scaleModelRecursively(obj, factor) {
+  obj.scale.multiplyScalar(factor);
+  obj.children.forEach(child => scaleModelRecursively(child, factor));
+}
+
 function onSelect() {
   if (reticle.visible && model) {
     const clone = model.clone(true);
+    scaleModelRecursively(clone, SCALE_FACTOR);
     clone.position.setFromMatrixPosition(reticle.matrix);
     clone.quaternion.setFromRotationMatrix(reticle.matrix);
     clone.rotation.x = 0;
