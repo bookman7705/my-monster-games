@@ -86,7 +86,7 @@ function init() {
 
       const maxDim = Math.max(size.x, size.y, size.z);
       const scale = 2 / maxDim; // fit to ~2 units tall
-      model.scale.setScalar(scale);
+      model.scale.setScalar(1);
 
       scene.add(model);
 
