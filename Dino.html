@@ -1,12 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<title>Island Viewer AR 2</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-  body { margin: 0; overflow: hidden; background: #111; }
-</style>
+  <meta charset="utf-8">
+  <title>Island Viewer AR 3</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; }
+  </style>
 </head>
 <body>
 
@@ -28,8 +28,8 @@ let scene, camera, renderer;
 let reticle;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
-let model = null;
-let mixer = null;
+let model1 = null, model2 = null;  // Separate variables for each model
+let mixer1 = null, mixer2 = null;  // Separate mixers for each model
 const clock = new THREE.Clock();
 
 init();
@@ -59,29 +59,53 @@ function init() {
   dirLight.position.set(5, 10, 2);
   scene.add(dirLight);
 
-  // Load GLB model
-  const loader = new GLTFLoader();
-  loader.load(
+  // Load the first GLB model (Island)
+  const loader1 = new GLTFLoader();
+  loader1.load(
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Island2.glb',
     (gltf) => {
-      model = gltf.scene;
-      model.scale.set(1,1, 1);  // scale 1:1
-      model.visible = false;
-      scene.add(model);
+      model1 = gltf.scene;
+      model1.scale.set(1, 1, 1);  // scale 1:1
+      model1.position.set(2, 0, -5);  // Set model1 position at (x=2, y=0, z=-5)
+      model1.visible = false;
+      scene.add(model1);
 
-      // Animation support
+      // Animation support for the first model
       if (gltf.animations.length > 0) {
-        mixer = new THREE.AnimationMixer(model);
+        mixer1 = new THREE.AnimationMixer(model1);
         gltf.animations.forEach((clip) => {
-          mixer.clipAction(clip).play();
+          mixer1.clipAction(clip).play();
         });
       }
     },
     undefined,
-    (error) => console.error('Error loading model:', error)
+    (error) => console.error('Error loading Island model:', error)
   );
 
-  // Reticle
+  // Load the second GLB model (Pistosaur)
+  const loader2 = new GLTFLoader();
+  loader2.load(
+    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/pistosaur_animated.glb',
+    (gltf) => {
+      model2 = gltf.scene;
+      model2.scale.set(1, 1, 1);  // scale 1:1
+      model2.position.set(4, 0, -5);  // Set model2 position relative to model1
+      model2.visible = false;
+      scene.add(model2);
+
+      // Animation support for the second model
+      if (gltf.animations.length > 0) {
+        mixer2 = new THREE.AnimationMixer(model2);
+        gltf.animations.forEach((clip) => {
+          mixer2.clipAction(clip).play();
+        });
+      }
+    },
+    undefined,
+    (error) => console.error('Error loading Pistosaur model:', error)
+  );
+
+  // Reticle setup (indicator for where the model will be placed in AR)
   const geometry = new THREE.RingGeometry(0.25, 0.3, 32);
   geometry.rotateX(-Math.PI / 2);
   const material = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
@@ -90,24 +114,37 @@ function init() {
   reticle.visible = false;
   scene.add(reticle);
 
-  // AR Button
-  document.body.appendChild(ARButton.createButton(renderer, {
-    requiredFeatures: ['hit-test', 'local-floor']
-  }));
+  // AR Button setup: Makes the page AR-capable (trigger WebXR)
+  const arButton = ARButton.createButton(renderer, {
+    requiredFeatures: ['hit-test', 'local-floor'] // Features needed for AR
+  });
+  document.body.appendChild(arButton); // Append AR button to the body
 
-  // Controller
+  // Controller setup for interaction
   const controller = renderer.xr.getController(0);
   controller.addEventListener('select', onSelect);
   scene.add(controller);
 
+  // Window resize listener
   window.addEventListener('resize', onWindowResize);
 }
 
 function onSelect() {
-  if (reticle.visible && model) {
-    model.visible = true;
-    model.position.setFromMatrixPosition(reticle.matrix);
-    model.quaternion.setFromRotationMatrix(reticle.matrix);
+  if (reticle.visible) {
+    // Place model1 based on the reticle's position
+    if (model1) {
+      model1.visible = true;
+      model1.position.setFromMatrixPosition(reticle.matrix);
+      model1.quaternion.setFromRotationMatrix(reticle.matrix);
+    }
+
+    // Place model2 relative to model1's position
+    if (model2 && model1) {
+      model2.visible = true;
+      // Here, model2's position is relative to model1's position
+      model2.position.set(model1.position.x + 2, model1.position.y, model1.position.z);
+      model2.quaternion.setFromRotationMatrix(reticle.matrix);
+    }
   }
 }
 
@@ -123,7 +160,8 @@ function animate() {
 
 function render(timestamp, frame) {
   const delta = clock.getDelta();
-  if (mixer) mixer.update(delta);
+  if (mixer1) mixer1.update(delta);
+  if (mixer2) mixer2.update(delta);
 
   if (frame) {
     const referenceSpace = renderer.xr.getReferenceSpace();
