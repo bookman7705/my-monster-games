@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Island Viewer AR 4</title>
+  <title>Island Viewer AR</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -84,11 +84,11 @@ function init() {
   // Load the second GLB model (Pistosaur)
   const loader2 = new GLTFLoader();
   loader2.load(
-    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/pistosaur_animated.glb',
+    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/stego.glb',
     (gltf) => {
       model2 = gltf.scene;
       model2.scale.set(1, 1, 1);  // scale 1:1
-      model2.position.set(4, 0, -5);  // Set model2 position relative to model1
+      model2.position.set(0, 0.25, -5);  // +X = Right, +Y = Up, +Z = ToViewer
       model2.visible = false;
       scene.add(model2);
 
@@ -141,7 +141,7 @@ function onSelect() {
     if (model2 && model1) {
       model2.visible = true;
       // Here, model2's position is relative to model1's position
-      model2.position.set(model1.position.x + 2, model1.position.y, model1.position.z);
+      model2.position.set(model1.position.x, model1.position.y, model1.position.z);
       model2.quaternion.setFromRotationMatrix(reticle.matrix);
     }
   }
