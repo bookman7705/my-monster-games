@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Island Viewer AR 1</title>
+  <title>Island Viewer AR 2</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -125,7 +125,7 @@ function init() {
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
     (gltf) => {
       model3 = gltf.scene;
-      model3.scale.set(1.5, 1.5, 1.5);
+      model3.scale.set(1, 1, 1);
       model3.visible = false;
       scene.add(model3);
       if (gltf.animations.length > 0) {
