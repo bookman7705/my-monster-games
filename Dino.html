@@ -1,26 +1,35 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Island Viewer AR 6</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body { margin: 0; overflow: hidden; background: #111; }
-  </style>
+<meta charset="utf-8">
+<title>Island Viewer AR 2</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  body { margin: 0; overflow: hidden; background: #111; }
+</style>
 </head>
 <body>
 
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/"
+  }
+}
+</script>
+
 <script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js';
-import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js';
-import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/webxr/ARButton.js';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { ARButton } from 'three/addons/webxr/ARButton.js';
 
 let scene, camera, renderer;
 let reticle;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
-let model1 = null, model2 = null;  // Separate variables for each model
-let mixer1 = null, mixer2 = null;  // Separate mixers for each model
+let model = null;
+let mixer = null;
 const clock = new THREE.Clock();
 
 init();
@@ -42,7 +51,7 @@ function init() {
   renderer.xr.enabled = true;
   document.body.appendChild(renderer.domElement);
 
-  // Lighting setup
+  // Lighting
   const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
   scene.add(hemiLight);
 
@@ -50,53 +59,29 @@ function init() {
   dirLight.position.set(5, 10, 2);
   scene.add(dirLight);
 
-  // Load the first GLB model (Island)
-  const loader1 = new GLTFLoader();
-  loader1.load(
+  // Load GLB model
+  const loader = new GLTFLoader();
+  loader.load(
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Island2.glb',
     (gltf) => {
-      model1 = gltf.scene;
-      model1.scale.set(1, 1, 1);  // scale 1:1
-      model1.position.set(2, 0, -5);  // Set model1 position at (x=2, y=0, z=-5)
-      model1.visible = false;
-      scene.add(model1);
+      model = gltf.scene;
+      model.scale.set(1,1, 1);  // scale 1:1
+      model.visible = false;
+      scene.add(model);
 
-      // Animation support for the first model
+      // Animation support
       if (gltf.animations.length > 0) {
-        mixer1 = new THREE.AnimationMixer(model1);
+        mixer = new THREE.AnimationMixer(model);
         gltf.animations.forEach((clip) => {
-          mixer1.clipAction(clip).play();
+          mixer.clipAction(clip).play();
         });
       }
     },
     undefined,
-    (error) => console.error('Error loading Island model:', error)
+    (error) => console.error('Error loading model:', error)
   );
 
-  // Load the second GLB model (Pistosaur)
-  const loader2 = new GLTFLoader();
-  loader2.load(
-    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/pistosaur_animated.glb',
-    (gltf) => {
-      model2 = gltf.scene;
-      model2.scale.set(1, 1, 1);  // scale 1:1
-      model2.position.set(0, 0, -5); // Initial position for model2
-      model2.visible = false;
-      scene.add(model2);
-
-      // Animation support for the second model
-      if (gltf.animations.length > 0) {
-        mixer2 = new THREE.AnimationMixer(model2);
-        gltf.animations.forEach((clip) => {
-          mixer2.clipAction(clip).play();
-        });
-      }
-    },
-    undefined,
-    (error) => console.error('Error loading Pistosaur model:', error)
-  );
-
-  // Reticle setup (indicator for where the model will be placed in AR)
+  // Reticle
   const geometry = new THREE.RingGeometry(0.25, 0.3, 32);
   geometry.rotateX(-Math.PI / 2);
   const material = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
@@ -105,37 +90,24 @@ function init() {
   reticle.visible = false;
   scene.add(reticle);
 
-  // AR Button setup: Makes the page AR-capable (trigger WebXR)
-  const arButton = ARButton.createButton(renderer, {
-    requiredFeatures: ['hit-test', 'local-floor'] // Features needed for AR
-  });
-  document.body.appendChild(arButton); // Append AR button to the body
+  // AR Button
+  document.body.appendChild(ARButton.createButton(renderer, {
+    requiredFeatures: ['hit-test', 'local-floor']
+  }));
 
-  // Controller setup for interaction
+  // Controller
   const controller = renderer.xr.getController(0);
   controller.addEventListener('select', onSelect);
   scene.add(controller);
 
-  // Window resize listener
   window.addEventListener('resize', onWindowResize);
 }
 
 function onSelect() {
-  if (reticle.visible) {
-    // Place model1 based on the reticle's position
-    if (model1) {
-      model1.visible = true;
-      model1.position.setFromMatrixPosition(reticle.matrix);
-      model1.quaternion.setFromRotationMatrix(reticle.matrix);
-    }
-
-    // Place model2 relative to model1's position
-    if (model2 && model1) {
-      model2.visible = true;
-      // Here, model2's position is relative to model1's position
-      model2.position.set(model1.position.x + 2, model1.position.y, model1.position.z);
-      model2.quaternion.setFromRotationMatrix(reticle.matrix);
-    }
+  if (reticle.visible && model) {
+    model.visible = true;
+    model.position.setFromMatrixPosition(reticle.matrix);
+    model.quaternion.setFromRotationMatrix(reticle.matrix);
   }
 }
 
@@ -151,8 +123,7 @@ function animate() {
 
 function render(timestamp, frame) {
   const delta = clock.getDelta();
-  if (mixer1) mixer1.update(delta);
-  if (mixer2) mixer2.update(delta);
+  if (mixer) mixer.update(delta);
 
   if (frame) {
     const referenceSpace = renderer.xr.getReferenceSpace();
@@ -194,4 +165,3 @@ function render(timestamp, frame) {
 
 </body>
 </html>
-
