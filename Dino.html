@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Island Viewer AR 5</title>
+  <title>Island Viewer AR 6</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -104,7 +104,7 @@ function init() {
     (gltf) => {
       model2 = gltf.scene;
       model2.scale.set(1.5, 1.5, 1.5);
-      model2.position.set(-20,0.5,-5);
+      model2.position.set(-2000,0.5,-5);
       model2.visible = false;
       scene.add(model2);
       if (gltf.animations.length > 0) {
