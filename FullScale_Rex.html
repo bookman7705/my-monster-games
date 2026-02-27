@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Rex Viewer AR</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; }
+  </style>
+</head>
+<body>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { ARButton } from 'three/addons/webxr/ARButton.js';
+
+let scene, camera, renderer;
+let reticle;
+let hitTestSource = null;
+let hitTestSourceRequested = false;
+let model1 = null, model3 = null; // Removed model2 (Stego)
+let mixer1 = null, mixer3 = null;
+const clock = new THREE.Clock();
+let hasPlacedModels = false;
+
+// --- AUDIO GLOBALS ---
+let oceanSound, audioListener;
+const oceanAudio = {
+  innerRadius: 3.0,   // zero volume within this radius
+  outerRadius: 15.0,  // max volume at this distance
+  maxVolume: 0.8,
+  curvePower: 2.0     // >1 = sharper ramp
+};
+
+init();
+animate();
+
+function init() {
+  scene = new THREE.Scene();
+
+  // --- CAMERA ---
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 100);
+
+  // --- RENDERER ---
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  // --- AUDIO SETUP ---
+  audioListener = new THREE.AudioListener();
+  camera.add(audioListener);
+
+  oceanSound = new THREE.Audio(audioListener);
+  const audioLoader = new THREE.AudioLoader();
+  audioLoader.load(
+    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/ocean-loop-sfx.mp3',
+    (buffer) => {
+      oceanSound.setBuffer(buffer);
+      oceanSound.setLoop(true);
+      oceanSound.setVolume(0);
+    },
+    undefined,
+    (err) => console.error('Failed to load audio:', err)
+  );
+
+  // --- LIGHTS ---
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight.position.set(5, 10, 2);
+  scene.add(dirLight);
+
+  // --- LOAD MODELS ---
+
+  // Load the Island model (model1)
+  const loader1 = new GLTFLoader();
+  loader1.load(
+    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/IslandWorld.glb',
+    (gltf) => {
+      model1 = gltf.scene;
+      model1.scale.set(1,1,1);
+      model1.visible = false;
+      scene.add(model1);
+      if (gltf.animations.length > 0) {
+        mixer1 = new THREE.AnimationMixer(model1);
+        gltf.animations.forEach(clip => mixer1.clipAction(clip).play());
+      }
+    },
+    undefined,
+    (err) => console.error('Error loading island:', err)
+  );
+
+  // Load the Rex model (model3)
+  const loader3 = new GLTFLoader();
+  loader3.load(
+    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
+    (gltf) => {
+      model3 = gltf.scene;
+      model3.scale.set(1.5, 1.5, 1.5);
+      model3.visible = false;
+      scene.add(model3);
+      if (gltf.animations.length > 0) {
+        mixer3 = new THREE.AnimationMixer(model3);
+        gltf.animations.forEach(clip => mixer3.clipAction(clip).play());
+      }
+      // If the island is already placed, snap Rex into position relative to it
+      if (hasPlacedModels && model1) {
+        placeDinosRelativeToIsland();
+      }
+    },
+    undefined,
+    (err) => console.error('Error loading Rex:', err)
+  );
+
+  // --- RETICLE ---
+  const geometry = new THREE.RingGeometry(0.25, 0.3, 32);
+  geometry.rotateX(-Math.PI/2);
+  const material = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+  reticle = new THREE.Mesh(geometry, material);
+  reticle.matrixAutoUpdate = false;
+  reticle.visible = false;
+  scene.add(reticle);
+
+  // --- AR BUTTON ---
+  const arButton = ARButton.createButton(renderer, {
+    requiredFeatures: ['hit-test', 'local-floor']
+  });
+  document.body.appendChild(arButton);
+
+  // --- CONTROLLER ---
+  const controller = renderer.xr.getController(0);
+  controller.addEventListener('select', onSelect);
+  scene.add(controller);
+
+  window.addEventListener('resize', onWindowResize);
+}
+
+function onSelect() {
+  // Only allow placement once when the reticle is visible
+  if (!reticle.visible || hasPlacedModels) return;
+
+  // Place island
+  if (model1) {
+    model1.visible = true;
+    model1.position.setFromMatrixPosition(reticle.matrix);
+    model1.quaternion.setFromRotationMatrix(reticle.matrix);
+  }
+
+  // Start ocean sound (ensure it begins at zero volume)
+  if (oceanSound && !oceanSound.isPlaying) {
+    oceanSound.setVolume(0);
+    oceanSound.play();
+  }
+
+  // Place Rex relative to the island
+  placeDinosRelativeToIsland();
+
+  // Prevent further placements and hide the reticle
+  hasPlacedModels = true;
+  reticle.visible = false;
+}
+
+// Ensure Rex is always positioned consistently relative to the island,
+// regardless of when their models finish loading.
+function placeDinosRelativeToIsland() {
+  if (!model1) return;
+
+  // Offsets in island-local space
+  const rexOffset   = new THREE.Vector3( 0, -0.1, 0); // Only Rex placement
+
+  // Rex placement
+  if (model3) {
+    const rexWorldOffset = rexOffset.clone().applyQuaternion(model1.quaternion);
+    model3.visible = true;
+    model3.position.copy(model1.position).add(rexWorldOffset);
+    model3.quaternion.copy(model1.quaternion);
+    model3.rotateY(Math.PI/-2); // face inward toward the island
+  }
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+  renderer.setAnimationLoop(render);
+}
+
+function render() {
+  const delta = clock.getDelta();
+  if (mixer1) mixer1.update(delta);
+  if (mixer3) mixer3.update(delta);
+
+  // --- HIT TEST --- (only show the reticle if models are not placed)
+  if (renderer.xr.isPresenting && !hasPlacedModels) {
+    const session = renderer.xr.getSession();
+    const referenceSpace = renderer.xr.getReferenceSpace();
+    if (!hitTestSourceRequested) {
+      session.requestReferenceSpace('viewer').then(vs =>
+        session.requestHitTestSource({ space: vs }).then(source => hitTestSource = source)
+      );
+      session.addEventListener('end', () => { hitTestSourceRequested=false; hitTestSource=null; });
+      hitTestSourceRequested = true;
+    }
+
+    if (hitTestSource) {
+      const frame = renderer.xr.getFrame();
+      const hitResults = frame.getHitTestResults(hitTestSource);
+      if (hitResults.length) {
+        const pose = hitResults[0].getPose(referenceSpace);
+        reticle.visible = true;
+        reticle.matrix.fromArray(pose.transform.matrix);
+      } else {
+        reticle.visible = false;
+      }
+    }
+  } else {
+    // If models are placed, keep the reticle hidden
+    reticle.visible = false;
+  }
+
+  // --- OCEAN VOLUME --- (unchanged)
+  if (model1 && model1.visible && oceanSound && oceanSound.isPlaying) {
+    const distance = camera.position.distanceTo(model1.position);
+    let volume = 0;
+
+    if (distance > oceanAudio.innerRadius) {
+      const clamped = THREE.MathUtils.clamp(distance, oceanAudio.innerRadius, oceanAudio.outerRadius);
+      let t = (clamped - oceanAudio.innerRadius) / (oceanAudio.outerRadius - oceanAudio.innerRadius);
+      t = Math.pow(t, oceanAudio.curvePower);
+      volume = t * oceanAudio.maxVolume;
+    }
+
+    const currentVolume = oceanSound.getVolume();
+    oceanSound.setVolume(THREE.MathUtils.lerp(currentVolume, volume, 0.05));
+  }
+
+  renderer.render(scene, camera);
+}
+</script>
+
+</body>
+</html>
