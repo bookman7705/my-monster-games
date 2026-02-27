@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Island Viewer AR 1</title>
+  <title>Island Viewer AR 2</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -104,7 +104,6 @@ function init() {
     (gltf) => {
       model2 = gltf.scene;
       model2.scale.set(1.75, 1.75, 1.75);
-      //model2.position.set(-2000,0.5,-5);
       model2.visible = false;
       scene.add(model2);
       if (gltf.animations.length > 0) {
@@ -114,6 +113,24 @@ function init() {
     },
     undefined,
     (err) => console.error('Error loading dino:', err)
+  );
+
+  const loader3 = new GLTFLoader();
+  loader3.load(
+    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
+    (gltf) => {
+      model3 = gltf.scene;
+      model3.scale.set(1, 1, 1);
+      model3.rotation.y = Math.PI; // faces "backwards" from default
+      model3.visible = false;
+      scene.add(model3);
+      if (gltf.animations.length > 0) {
+        mixer3 = new THREE.AnimationMixer(model3);
+        gltf.animations.forEach(clip => mixer3.clipAction(clip).play());
+      }
+    },
+    undefined,
+    (err) => console.error('Error loading Rex:', err)
   );
 
   // --- RETICLE ---
@@ -155,11 +172,18 @@ function onSelect() {
   oceanSound.play();
 }
 
-  // Place dino
+  // Place Stego
   if (model2 && model1) {
     model2.visible = true;
-    model2.position.set(model1.position.x-1.25, model1.position.y, model1.position.z-3.5);
+    model2.position.set(model1.position.x-1.5, model1.position.y, model1.position.z-3.5);
     model2.quaternion.setFromRotationMatrix(reticle.matrix);
+  }
+
+  // Place Rex
+  if (model3 && model1) {
+    model3.visible = true;
+    model3.position.set(model1.position.x+1.5, model1.position.y, model1.position.z-3.5);
+    model3.quaternion.setFromRotationMatrix(reticle.matrix);
   }
 }
 
@@ -177,6 +201,7 @@ function render() {
   const delta = clock.getDelta();
   if (mixer1) mixer1.update(delta);
   if (mixer2) mixer2.update(delta);
+  if (mixer3) mixer3.update(delta);
 
   // --- HIT TEST ---
   if (renderer.xr.isPresenting) {
