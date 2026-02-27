@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Island Viewer AR 3</title>
+  <title>Island Viewer AR 4</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -31,6 +31,7 @@ let hitTestSourceRequested = false;
 let model1 = null, model2 = null, model3 = null;
 let mixer1 = null, mixer2 = null, mixer3 = null;
 const clock = new THREE.Clock();
+let hasPlacedModels = false;
 
 // --- AUDIO GLOBALS ---
 let oceanSound, audioListener;
@@ -156,7 +157,8 @@ function init() {
 }
 
 function onSelect() {
-  if (!reticle.visible) return;
+  // Only allow placement once when the reticle is visible
+  if (!reticle.visible || hasPlacedModels) return;
 
   // Place island
   if (model1) {
@@ -165,11 +167,11 @@ function onSelect() {
     model1.quaternion.setFromRotationMatrix(reticle.matrix);
   }
 
-  // Start ocean sound
+  // Start ocean sound (ensure it begins at zero volume)
   if (oceanSound && !oceanSound.isPlaying) {
-  oceanSound.setVolume(0);  // explicitly zero before playing
-  oceanSound.play();
-}
+    oceanSound.setVolume(0);
+    oceanSound.play();
+  }
 
   // Place Stego
   if (model2 && model1) {
@@ -185,6 +187,10 @@ function onSelect() {
     model3.quaternion.setFromRotationMatrix(reticle.matrix);
     model3.rotateY(Math.PI); // rotate additional 180° after aligning with reticle
   }
+
+  // Prevent further placements and hide the reticle
+  hasPlacedModels = true;
+  reticle.visible = false;
 }
 
 function onWindowResize() {
