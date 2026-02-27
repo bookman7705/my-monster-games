@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Island Viewer AR 2</title>
+  <title>Island Viewer AR 3</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -158,7 +158,7 @@ function onSelect() {
   // Place dino
   if (model2 && model1) {
     model2.visible = true;
-    model2.position.set(model1.position.x-5, model1.position.y+0.5, model1.position.z);
+    model2.position.set(model1.position.x-3, model1.position.y+0.5, model1.position.z-3);
     model2.quaternion.setFromRotationMatrix(reticle.matrix);
   }
 }
