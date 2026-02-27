@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Island Viewer AR 2</title>
+  <title>Island Viewer AR 3</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -28,8 +28,8 @@ let scene, camera, renderer;
 let reticle;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
-let model1 = null, model2 = null;
-let mixer1 = null, mixer2 = null;
+let model1 = null, model2 = null, model3 = null;
+let mixer1 = null, mixer2 = null, mixer3 = null;
 const clock = new THREE.Clock();
 
 // --- AUDIO GLOBALS ---
@@ -121,7 +121,6 @@ function init() {
     (gltf) => {
       model3 = gltf.scene;
       model3.scale.set(1, 1, 1);
-      model3.rotation.y = Math.PI; // faces "backwards" from default
       model3.visible = false;
       scene.add(model3);
       if (gltf.animations.length > 0) {
@@ -184,6 +183,7 @@ function onSelect() {
     model3.visible = true;
     model3.position.set(model1.position.x+1.5, model1.position.y, model1.position.z-3.5);
     model3.quaternion.setFromRotationMatrix(reticle.matrix);
+    model3.rotateY(Math.PI); // rotate additional 180° after aligning with reticle
   }
 }
 
