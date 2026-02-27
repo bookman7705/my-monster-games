@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Island Viewer AR 5</title>
+  <title>Island Viewer AR 6</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -189,14 +189,14 @@ function onSelect() {
   reticle.visible = false;
 }
 
-// Ensure Stego and Rex are always positioned consistently relative to the island,
+// Ensure Stego and  are always positioned consistently relative to the island,
 // regardless of when their models finish loading.
 function placeDinosRelativeToIsland() {
   if (!model1) return;
 
   // Offsets in island-local space
   const stegoOffset = new THREE.Vector3(-1.5, 0, -3.5);
-  const rexOffset   = new THREE.Vector3( 3, -0.5, -3.5);
+  const Offset   = new THREE.Vector3( 3, -0.2, -3.5);
 
   // Stego placement
   if (model2) {
