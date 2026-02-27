@@ -35,7 +35,7 @@ const clock = new THREE.Clock();
 // --- AUDIO GLOBALS ---
 let oceanSound, audioListener;
 const oceanAudio = {
-  innerRadius: 1.0,   // zero volume within this radius
+  innerRadius: 3.0,   // zero volume within this radius
   outerRadius: 15.0,  // max volume at this distance
   maxVolume: 0.8,
   curvePower: 2.0     // >1 = sharper ramp
@@ -104,7 +104,7 @@ function init() {
     (gltf) => {
       model2 = gltf.scene;
       model2.scale.set(1.5, 1.5, 1.5);
-      model2.position.set(0,0.25,-5);
+      model2.position.set(-5,0.5,-5);
       model2.visible = false;
       scene.add(model2);
       if (gltf.animations.length > 0) {
@@ -150,7 +150,10 @@ function onSelect() {
   }
 
   // Start ocean sound
-  if (oceanSound && !oceanSound.isPlaying) oceanSound.play();
+  if (oceanSound && !oceanSound.isPlaying) {
+  oceanSound.setVolume(0);  // explicitly zero before playing
+  oceanSound.play();
+}
 
   // Place dino
   if (model2 && model1) {
