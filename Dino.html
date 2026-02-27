@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Island Viewer AR 5</title>
+  <title>Island Viewer AR 6</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { margin: 0; overflow: hidden; background: #111; }
@@ -10,27 +10,25 @@
 </head>
 <body>
 
-<script type="module"> 
-import * as THREE from 'three'; 
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'; 
-import { ARButton } from 'three/addons/webxr/ARButton.js';
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js';
+import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/webxr/ARButton.js';
 
 let scene, camera, renderer;
 let reticle;
 let hitTestSource = null;
 let hitTestSourceRequested = false;
-let model1 = null, model2 = null;
-let mixer1 = null, mixer2 = null;
+let model1 = null, model2 = null;  // Separate variables for each model
+let mixer1 = null, mixer2 = null;  // Separate mixers for each model
 const clock = new THREE.Clock();
 
 init();
 animate();
 
 function init() {
-  // Scene setup
   scene = new THREE.Scene();
 
-  // Camera setup
   camera = new THREE.PerspectiveCamera(
     60,
     window.innerWidth / window.innerHeight,
@@ -38,11 +36,10 @@ function init() {
     100
   );
 
-  // WebGL renderer setup
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.xr.enabled = true; // Enable WebXR (AR) support
+  renderer.xr.enabled = true;
   document.body.appendChild(renderer.domElement);
 
   // Lighting setup
@@ -83,6 +80,7 @@ function init() {
     (gltf) => {
       model2 = gltf.scene;
       model2.scale.set(1, 1, 1);  // scale 1:1
+      model2.position.set(0, 0, -5); // Initial position for model2
       model2.visible = false;
       scene.add(model2);
 
@@ -134,6 +132,7 @@ function onSelect() {
     // Place model2 relative to model1's position
     if (model2 && model1) {
       model2.visible = true;
+      // Here, model2's position is relative to model1's position
       model2.position.set(model1.position.x + 2, model1.position.y, model1.position.z);
       model2.quaternion.setFromRotationMatrix(reticle.matrix);
     }
@@ -195,3 +194,4 @@ function render(timestamp, frame) {
 
 </body>
 </html>
+
