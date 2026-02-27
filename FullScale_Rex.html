@@ -107,7 +107,7 @@ function init() {
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
     (gltf) => {
       model3 = gltf.scene;
-      model3.scale.set(1.5, 1.5, 1.5);
+      model3.scale.set(1, 1, 1);
       model3.visible = false;
       scene.add(model3);
       if (gltf.animations.length > 0) {
