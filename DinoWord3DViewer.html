@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Island Viewer 3D 3</title>
+<title>Island Viewer 3D 5</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   body { margin: 0; overflow: hidden; background: #111; -webkit-tap-highlight-color: transparent; }
@@ -11,22 +11,13 @@
 </head>
 <body>
 
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/"
-  }
-}
-</script>
-
 <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
 <script>eruda.init();</script>
 
 <script type="module">
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js';
+import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js';
+import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/controls/OrbitControls.js';
 
 let scene, camera, renderer, controls;
 let mixer1, mixer2, mixer3;
