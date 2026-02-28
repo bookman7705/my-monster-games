@@ -2,10 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Island Viewer 3D 2</title>
+<title>Island Viewer 3D 3</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  body { margin: 0; overflow: hidden; background: #111; }
+  body { margin: 0; overflow: hidden; background: #111; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; touch-action: none; -webkit-touch-callout: none; }
 </style>
 </head>
 <body>
@@ -39,18 +40,27 @@ function init() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x111111);
 
-  camera = new THREE.PerspectiveCamera(
-    60,
-    window.innerWidth / window.innerHeight,
-    0.1,
-    1000
-  );
+  const initialW = window.innerWidth || 1;
+  const initialH = window.innerHeight || 1;
+  camera = new THREE.PerspectiveCamera(60, initialW / initialH, 0.1, 1000);
   camera.position.set(0, 5, 12);
 
-  renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio);
+  // iOS Safari: alpha:false and low-power often required for WebGL to render; cap pixel ratio to avoid GPU limits
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const webglOpts = {
+    antialias: !isIOS,
+    alpha: false,
+    powerPreference: 'low-power',
+    failIfMajorPerformanceCrisis: false
+  };
+  renderer = new THREE.WebGLRenderer(webglOpts);
+  const pixelRatio = isIOS ? Math.min(window.devicePixelRatio, 2) : window.devicePixelRatio;
+  renderer.setPixelRatio(pixelRatio);
   renderer.setSize(window.innerWidth, window.innerHeight);
-  document.body.appendChild(renderer.domElement);
+  renderer.setClearColor(0x111111, 1);
+  const canvas = renderer.domElement;
+  canvas.style.webkitTransform = 'translateZ(0)';
+  document.body.appendChild(canvas);
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -76,7 +86,16 @@ function init() {
       oceanSound.setBuffer(buffer);
       oceanSound.setLoop(true);
       oceanSound.setVolume(0.6);
-      oceanSound.play();
+      let audioStarted = false;
+      const playAudio = () => {
+        if (audioStarted) return;
+        audioStarted = true;
+        oceanSound.play();
+        document.removeEventListener('click', playAudio);
+        document.removeEventListener('touchend', playAudio);
+      };
+      document.addEventListener('click', playAudio);
+      document.addEventListener('touchend', playAudio);
     }
   );
 
@@ -131,12 +150,20 @@ function init() {
   );
 
   window.addEventListener('resize', onWindowResize);
+  if (typeof window.visualViewport !== 'undefined') {
+    window.visualViewport.addEventListener('resize', onWindowResize);
+  }
+  // iOS: force correct size after layout (address bar / safe area)
+  if (isIOS) setTimeout(onWindowResize, 100);
 }
 
 function onWindowResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (w <= 0 || h <= 0) return;
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(w, h);
 }
 
 function animate() {
