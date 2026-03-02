@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Marker AR Fixed</title>
+<title>Marker AR Fixed 2</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <style>
   body, html { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000; }
@@ -69,6 +69,9 @@ async function initAR() {
 
     const { renderer, scene, camera } = mindar;
 
+    // Ensure WebGL background is transparent so the camera video can show through
+    renderer.setClearColor(0x000000, 0);
+
     // Lights
     const hemi = new THREE.HemisphereLight(0xffffff, 0x111111, 1);
     scene.add(hemi);
@@ -102,19 +105,21 @@ async function initAR() {
 
     const clock = new THREE.Clock();
 
-    // Start MindAR + set video attributes to fix black feed
+    // Start MindAR
     await mindar.start();
 
     // Hide overlay after start
     errorOverlay.style.display = "none";
 
-    // Fix camera video on iOS/Android
-    const videoEl = document.querySelector("video");
-    if (videoEl) {
-      videoEl.setAttribute("playsinline", "");
-      videoEl.setAttribute("muted", "");
-      videoEl.setAttribute("autoplay", "");
-      videoEl.style.objectFit = "cover";
+    // Ensure camera video element is sized and stacked correctly
+    if (mindar.video) {
+      mindar.video.setAttribute("playsinline", "");
+      mindar.video.setAttribute("muted", "");
+      mindar.video.setAttribute("autoplay", "");
+      mindar.video.style.objectFit = "cover";
+      mindar.video.style.width = "100%";
+      mindar.video.style.height = "100%";
+      mindar.video.style.zIndex = "-1";
     }
 
     renderer.setAnimationLoop(() => {
