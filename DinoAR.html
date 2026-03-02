@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>MindAR Demo 1</title>
+    <title>MindAR Demo 3</title>
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"
@@ -170,10 +170,16 @@
       }
     </style>
 
-    <!-- Three.js & MindAR (non-module, works on older iOS Safari) -->
-    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"></script>
+    <!-- Import map for Three.js, GLTFLoader, and MindAR (ES modules) -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+          "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+        }
+      }
+    </script>
 
     <!-- Console Debugger -->
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
@@ -271,175 +277,201 @@
         const container = document.getElementById("ar-container");
         const noCameraOverlay = document.getElementById("no-camera-overlay");
 
-        // ============================================================
-        // BEGIN temporary no-camera preview (safe to remove later)
-        // ============================================================
-        if (NO_CAMERA_TEST_MODE) {
-          // Show the testing overlay and render the GLB model in a
-          // regular Three.js scene so you can verify the asset without
-          // requiring getUserMedia / camera permissions.
+        const supportsImportMap =
+          typeof HTMLScriptElement !== "undefined" &&
+          HTMLScriptElement.supports &&
+          HTMLScriptElement.supports("importmap");
+
+        if (!supportsImportMap) {
+          console.warn(
+            "Import maps are not supported in this browser. MindAR (ESM) cannot run here.",
+          );
           if (noCameraOverlay) {
             noCameraOverlay.classList.remove("hidden");
           }
+          return;
+        }
 
-          const width = window.innerWidth;
-          const height = window.innerHeight;
-
-          const scene = new THREE.Scene();
-          scene.background = new THREE.Color(0x050816);
-
-          const camera = new THREE.PerspectiveCamera(
-            45,
-            width / height,
-            0.1,
-            100,
+        (async () => {
+          // Dynamically import Three.js, GLTFLoader, and MindARThree
+          const THREE = await import("three");
+          const { GLTFLoader } = await import(
+            "three/addons/loaders/GLTFLoader.js"
           );
-          camera.position.set(0, 1.2, 3);
+          const { MindARThree } = await import("mindar-image-three");
 
-          const renderer = new THREE.WebGLRenderer({
-            antialias: true,
-            alpha: true,
+          // ============================================================
+          // BEGIN temporary no-camera preview (safe to remove later)
+          // ============================================================
+          if (NO_CAMERA_TEST_MODE) {
+            // Show the testing overlay and render the GLB model in a
+            // regular Three.js scene so you can verify the asset without
+            // requiring getUserMedia / camera permissions.
+            if (noCameraOverlay) {
+              noCameraOverlay.classList.remove("hidden");
+            }
+
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050816);
+
+            const camera = new THREE.PerspectiveCamera(
+              45,
+              width / height,
+              0.1,
+              100,
+            );
+            camera.position.set(0, 1.2, 3);
+
+            const renderer = new THREE.WebGLRenderer({
+              antialias: true,
+              alpha: true,
+            });
+            renderer.setPixelRatio(window.devicePixelRatio || 1);
+            renderer.setSize(width, height);
+            container.appendChild(renderer.domElement);
+
+            const hemiLight = new THREE.HemisphereLight(
+              0xffffff,
+              0x111111,
+              1.1,
+            );
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+            dirLight.position.set(2, 4, 3);
+            scene.add(dirLight);
+
+            const loader = new GLTFLoader();
+            let mixer = null;
+
+            loader.load(
+              MODEL_SRC,
+              (gltf) => {
+                const model = gltf.scene;
+                model.position.set(0, -0.6, 0);
+                model.scale.set(1.4, 1.4, 1.4);
+                scene.add(model);
+
+                if (gltf.animations && gltf.animations.length > 0) {
+                  mixer = new THREE.AnimationMixer(model);
+                  const action = mixer.clipAction(gltf.animations[0]);
+                  action.play();
+                }
+              },
+              undefined,
+              (error) => {
+                console.error("Failed to load GLB model in test mode:", error);
+              },
+            );
+
+            const clock = new THREE.Clock();
+
+            function animate() {
+              requestAnimationFrame(animate);
+              const delta = clock.getDelta();
+              if (mixer) mixer.update(delta);
+              renderer.render(scene, camera);
+            }
+
+            animate();
+
+            window.addEventListener("resize", () => {
+              const w = window.innerWidth;
+              const h = window.innerHeight;
+              camera.aspect = w / h;
+              camera.updateProjectionMatrix();
+              renderer.setSize(w, h);
+            });
+
+            // IMPORTANT:
+            // We return early here so MindAR (and thus the camera)
+            // is never initialized while NO_CAMERA_TEST_MODE is true.
+            return;
+          }
+          // ============================================================
+          // END temporary no-camera preview (safe to remove later)
+          // ============================================================
+
+          // Hide the testing overlay when running with a real camera.
+          if (noCameraOverlay) {
+            noCameraOverlay.classList.add("hidden");
+          }
+
+          // ============================================================
+          // MindAR + Three.js marker-based AR flow
+          // ============================================================
+
+          const mindarThree = new MindARThree({
+            container,
+            imageTargetSrc: IMAGE_TARGET_SRC,
+            uiLoading: "yes",
+            uiScanning: "yes",
           });
-          renderer.setPixelRatio(window.devicePixelRatio || 1);
-          renderer.setSize(width, height);
-          container.appendChild(renderer.domElement);
 
-          const hemiLight = new THREE.HemisphereLight(
+          const { renderer, scene, camera } = mindarThree;
+
+          // Make renderer fill the viewport on high-DPI mobile screens.
+          renderer.setPixelRatio(window.devicePixelRatio || 1);
+          renderer.setSize(window.innerWidth, window.innerHeight);
+
+          // Basic lighting for the GLB model.
+          const hemiLightAR = new THREE.HemisphereLight(
             0xffffff,
             0x111111,
-            1.1,
+            1.0,
           );
-          scene.add(hemiLight);
+          scene.add(hemiLightAR);
 
-          const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
-          dirLight.position.set(2, 4, 3);
-          scene.add(dirLight);
+          const dirLightAR = new THREE.DirectionalLight(0xffffff, 0.9);
+          dirLightAR.position.set(1, 3, 2);
+          scene.add(dirLightAR);
 
-          const loader = new THREE.GLTFLoader();
-          let mixer = null;
+          // Anchor that attaches content to the first marker (index 0).
+          const anchor = mindarThree.addAnchor(0);
 
-          loader.load(
+          const gltfLoader = new GLTFLoader();
+          let mixerAR = null;
+
+          gltfLoader.load(
             MODEL_SRC,
             (gltf) => {
               const model = gltf.scene;
-              model.position.set(0, -0.6, 0);
-              model.scale.set(1.4, 1.4, 1.4);
-              scene.add(model);
+              model.scale.set(0.5, 0.5, 0.5);
+              model.position.set(0, 0, 0);
+              anchor.group.add(model);
 
               if (gltf.animations && gltf.animations.length > 0) {
-                mixer = new THREE.AnimationMixer(model);
-                const action = mixer.clipAction(gltf.animations[0]);
+                mixerAR = new THREE.AnimationMixer(model);
+                const action = mixerAR.clipAction(gltf.animations[0]);
                 action.play();
               }
             },
             undefined,
             (error) => {
-              console.error("Failed to load GLB model in test mode:", error);
+              console.error("Failed to load GLB model for AR:", error);
             },
           );
 
-          const clock = new THREE.Clock();
+          const clockAR = new THREE.Clock();
 
-          function animate() {
-            requestAnimationFrame(animate);
-            const delta = clock.getDelta();
-            if (mixer) mixer.update(delta);
-            renderer.render(scene, camera);
-          }
-
-          animate();
-
-          window.addEventListener("resize", () => {
-            const w = window.innerWidth;
-            const h = window.innerHeight;
-            camera.aspect = w / h;
-            camera.updateProjectionMatrix();
-            renderer.setSize(w, h);
-          });
-
-          // IMPORTANT:
-          // We return early here so MindAR (and thus the camera)
-          // is never initialized while NO_CAMERA_TEST_MODE is true.
-          return;
-        }
-        // ============================================================
-        // END temporary no-camera preview (safe to remove later)
-        // ============================================================
-
-        // Hide the testing overlay when running with a real camera.
-        if (noCameraOverlay) {
-          noCameraOverlay.classList.add("hidden");
-        }
-
-        // ============================================================
-        // MindAR + Three.js marker-based AR flow
-        // ============================================================
-
-        const { MindARThree } = window.MINDAR.IMAGE;
-
-        const mindarThree = new MindARThree({
-          container,
-          imageTargetSrc: IMAGE_TARGET_SRC,
-          uiLoading: "yes",
-          uiScanning: "yes",
-        });
-
-        const { renderer, scene, camera } = mindarThree;
-
-        // Make renderer fill the viewport on high-DPI mobile screens.
-        renderer.setPixelRatio(window.devicePixelRatio || 1);
-        renderer.setSize(window.innerWidth, window.innerHeight);
-
-        // Basic lighting for the GLB model.
-        const hemiLightAR = new THREE.HemisphereLight(0xffffff, 0x111111, 1.0);
-        scene.add(hemiLightAR);
-
-        const dirLightAR = new THREE.DirectionalLight(0xffffff, 0.9);
-        dirLightAR.position.set(1, 3, 2);
-        scene.add(dirLightAR);
-
-        // Anchor that attaches content to the first marker (index 0).
-        const anchor = mindarThree.addAnchor(0);
-
-        const gltfLoader = new THREE.GLTFLoader();
-        let mixerAR = null;
-
-        gltfLoader.load(
-          MODEL_SRC,
-          (gltf) => {
-            const model = gltf.scene;
-            model.scale.set(0.5, 0.5, 0.5);
-            model.position.set(0, 0, 0);
-            anchor.group.add(model);
-
-            if (gltf.animations && gltf.animations.length > 0) {
-              mixerAR = new THREE.AnimationMixer(model);
-              const action = mixerAR.clipAction(gltf.animations[0]);
-              action.play();
+          const start = async () => {
+            try {
+              await mindarThree.start();
+              renderer.setAnimationLoop(() => {
+                const delta = clockAR.getDelta();
+                if (mixerAR) mixerAR.update(delta);
+                renderer.render(scene, camera);
+              });
+            } catch (err) {
+              console.error("MindAR failed to start:", err);
             }
-          },
-          undefined,
-          (error) => {
-            console.error("Failed to load GLB model for AR:", error);
-          },
-        );
+          };
 
-        const clockAR = new THREE.Clock();
-
-        const start = async () => {
-          try {
-            await mindarThree.start();
-            renderer.setAnimationLoop(() => {
-              const delta = clockAR.getDelta();
-              if (mixerAR) mixerAR.update(delta);
-              renderer.render(scene, camera);
-            });
-          } catch (err) {
-            console.error("MindAR failed to start:", err);
-          }
-        };
-
-        start();
+          start();
+        })();
       });
     </script>
   </body>
