@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Island Viewer 3D 9</title>
+<title>Island Viewer 3D 1</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   body { margin: 0; overflow: hidden; background: #111; -webkit-tap-highlight-color: transparent; }
@@ -15,7 +15,6 @@
 <script>eruda.init();</script>
 
 <script type="module">
-// esm.sh resolves bare 'three' inside addons for Safari/iOS (no import map)
 import * as THREE from 'https://esm.sh/three@0.160.0';
 import { GLTFLoader } from 'https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js';
@@ -32,27 +31,33 @@ function init() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x111111);
 
-  const initialW = window.innerWidth || 1;
-  const initialH = window.innerHeight || 1;
-  camera = new THREE.PerspectiveCamera(60, initialW / initialH, 0.1, 1000);
+  const w = window.innerWidth || 1;
+  const h = window.innerHeight || 1;
+
+  camera = new THREE.PerspectiveCamera(60, w / h, 0.1, 1000);
   camera.position.set(0, 5, 12);
 
-  // iOS Safari: alpha:false and low-power often required for WebGL to render; cap pixel ratio to avoid GPU limits
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const webglOpts = {
-    antialias: !isIOS,
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  // 🔧 iOS SAFE RENDERER
+  renderer = new THREE.WebGLRenderer({
+    antialias: false,
     alpha: false,
     powerPreference: 'low-power',
-    failIfMajorPerformanceCrisis: false
-  };
-  renderer = new THREE.WebGLRenderer(webglOpts);
-  const pixelRatio = isIOS ? Math.min(window.devicePixelRatio, 2) : window.devicePixelRatio;
-  renderer.setPixelRatio(pixelRatio);
-  renderer.setSize(window.innerWidth, window.innerHeight);
+    failIfMajorPerformanceCrisis: false,
+    precision: 'highp'
+  });
+
+  // Force high precision (Safari bug workaround)
+  renderer.capabilities.getMaxPrecision = () => 'highp';
+
+  renderer.useLegacyLights = true; // more stable on iOS
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(w, h);
   renderer.setClearColor(0x111111, 1);
-  const canvas = renderer.domElement;
-  canvas.style.webkitTransform = 'translateZ(0)';
-  document.body.appendChild(canvas);
+
+  document.body.appendChild(renderer.domElement);
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -72,34 +77,55 @@ function init() {
 
   const oceanSound = new THREE.Audio(listener);
   const audioLoader = new THREE.AudioLoader();
+
   audioLoader.load(
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/ocean-loop-sfx.mp3',
     (buffer) => {
       oceanSound.setBuffer(buffer);
       oceanSound.setLoop(true);
       oceanSound.setVolume(0.6);
-      let audioStarted = false;
-      const playAudio = () => {
-        if (audioStarted) return;
-        audioStarted = true;
+
+      let started = false;
+      const startAudio = () => {
+        if (started) return;
+        started = true;
         oceanSound.play();
-        document.removeEventListener('click', playAudio);
-        document.removeEventListener('touchend', playAudio);
+        document.removeEventListener('click', startAudio);
+        document.removeEventListener('touchend', startAudio);
       };
-      document.addEventListener('click', playAudio);
-      document.addEventListener('touchend', playAudio);
+
+      document.addEventListener('click', startAudio);
+      document.addEventListener('touchend', startAudio);
     }
   );
 
   const loader = new GLTFLoader();
+
+  // 🔧 Common material precision fix
+  function fixMaterials(root) {
+    root.traverse((child) => {
+      if (child.isMesh && child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(mat => {
+            mat.precision = 'highp';
+            mat.needsUpdate = true;
+          });
+        } else {
+          child.material.precision = 'highp';
+          child.material.needsUpdate = true;
+        }
+      }
+    });
+  }
 
   // Load Island
   loader.load(
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/IslandWorld.glb',
     (gltf) => {
       const island = gltf.scene;
-      island.scale.set(1,1,1);
       scene.add(island);
+
+      fixMaterials(island);
 
       if (gltf.animations.length) {
         mixer1 = new THREE.AnimationMixer(island);
@@ -113,9 +139,11 @@ function init() {
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/stego.glb',
     (gltf) => {
       const stego = gltf.scene;
-      stego.scale.set(1.75,1.75,1.75);
+      stego.scale.set(1.75, 1.75, 1.75);
       stego.position.set(-1.5, 0, -3.5);
       scene.add(stego);
+
+      fixMaterials(stego);
 
       if (gltf.animations.length) {
         mixer2 = new THREE.AnimationMixer(stego);
@@ -129,10 +157,12 @@ function init() {
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
     (gltf) => {
       const rex = gltf.scene;
-      rex.scale.set(0.4,0.4,0.4);
+      rex.scale.set(0.4, 0.4, 0.4);
       rex.position.set(3, -0.1, -3.5);
       rex.rotation.y = -Math.PI / 2;
       scene.add(rex);
+
+      fixMaterials(rex);
 
       if (gltf.animations.length) {
         mixer3 = new THREE.AnimationMixer(rex);
@@ -141,18 +171,19 @@ function init() {
     }
   );
 
-  window.addEventListener('resize', onWindowResize);
-  if (typeof window.visualViewport !== 'undefined') {
-    window.visualViewport.addEventListener('resize', onWindowResize);
+  window.addEventListener('resize', onResize);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', onResize);
   }
-  // iOS: force correct size after layout (address bar / safe area)
-  if (isIOS) setTimeout(onWindowResize, 100);
+
+  if (isIOS) setTimeout(onResize, 100);
 }
 
-function onWindowResize() {
+function onResize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
   if (w <= 0 || h <= 0) return;
+
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
