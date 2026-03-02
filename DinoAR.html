@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Dino AR - MindAR Marker Demo 4</title>
+    <title>Dino AR - MindAR Marker Demo 5</title>
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"
@@ -170,17 +170,10 @@
       }
     </style>
 
-    <!-- Import map for Three.js, GLTFLoader, and MindAR (ES modules) -->
-    <script type="importmap">
-      {
-        "imports": {
-          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-          "three/examples/jsm/loaders/GLTFLoader.js": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
-          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
-          "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
-        }
-      }
-    </script>
+    <!-- Three.js & MindAR (non-module, works on older iOS Safari) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.132.2/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"></script>
 
     <!-- Console Debugger -->
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
@@ -243,11 +236,7 @@
       </div>
     </div>
 
-    <script type="module">
-      import * as THREE from "three";
-      import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-      import { MindARThree } from "mindar-image-three";
-
+    <script>
       // ============================================================
       // Configuration
       // ============================================================
@@ -278,7 +267,7 @@
       // After that, only the real MindAR camera-based flow will run.
       const NO_CAMERA_TEST_MODE = true;
 
-      window.addEventListener("DOMContentLoaded", () => {
+      document.addEventListener("DOMContentLoaded", () => {
         const container = document.getElementById("ar-container");
         const noCameraOverlay = document.getElementById("no-camera-overlay");
 
@@ -326,7 +315,7 @@
           dirLight.position.set(2, 4, 3);
           scene.add(dirLight);
 
-          const loader = new GLTFLoader();
+          const loader = new THREE.GLTFLoader();
           let mixer = null;
 
           loader.load(
@@ -386,6 +375,8 @@
         // MindAR + Three.js marker-based AR flow
         // ============================================================
 
+        const { MindARThree } = window.MINDAR.IMAGE;
+
         const mindarThree = new MindARThree({
           container,
           imageTargetSrc: IMAGE_TARGET_SRC,
@@ -410,7 +401,7 @@
         // Anchor that attaches content to the first marker (index 0).
         const anchor = mindarThree.addAnchor(0);
 
-        const gltfLoader = new GLTFLoader();
+        const gltfLoader = new THREE.GLTFLoader();
         let mixerAR = null;
 
         gltfLoader.load(
