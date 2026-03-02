@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Dino AR - MindAR Marker Demo 2</title>
+    <title>Dino AR - MindAR Marker Demo 3</title>
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"
@@ -170,15 +170,22 @@
       }
     </style>
 
-    <!-- Three.js & MindAR (Three.js version) -->
-    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/GLTFLoader.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"></script>
+    <!-- Import map for Three.js, GLTFLoader, and MindAR (ES modules) -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/examples/jsm/loaders/GLTFLoader.js": "https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js",
+          "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+        }
+      }
+    </script>
 
     <!-- Console Debugger -->
     <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-    <script>eruda.init();</script>
-  
+    <script>
+      eruda.init();
+    </script>
   </head>
   <body>
     <div id="ar-container"></div>
@@ -235,7 +242,11 @@
       </div>
     </div>
 
-    <script>
+    <script type="module">
+      import * as THREE from "three";
+      import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+      import { MindARThree } from "mindar-image-three";
+
       // ============================================================
       // Configuration
       // ============================================================
@@ -243,11 +254,13 @@
       // Path to your compiled MindAR image target file (.mind),
       // generated from the PNG marker shown in the overlay.
       // Replace with your own path if needed.
-      const IMAGE_TARGET_SRC = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/Trex.mind";
+      const IMAGE_TARGET_SRC =
+        "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/Trex.mind";
 
       // Path to your animated GLB model.
       // Replace with your own template model (e.g. dino.glb).
-      const MODEL_SRC = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb";
+      const MODEL_SRC =
+        "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb";
 
       // ------------------------------------------------------------
       // TEMPORARY camera-free testing flag
@@ -264,7 +277,7 @@
       // After that, only the real MindAR camera-based flow will run.
       const NO_CAMERA_TEST_MODE = true;
 
-      document.addEventListener("DOMContentLoaded", () => {
+      window.addEventListener("DOMContentLoaded", () => {
         const container = document.getElementById("ar-container");
         const noCameraOverlay = document.getElementById("no-camera-overlay");
 
@@ -312,7 +325,7 @@
           dirLight.position.set(2, 4, 3);
           scene.add(dirLight);
 
-          const loader = new THREE.GLTFLoader();
+          const loader = new GLTFLoader();
           let mixer = null;
 
           loader.load(
@@ -372,8 +385,6 @@
         // MindAR + Three.js marker-based AR flow
         // ============================================================
 
-        const { MindARThree } = window.MINDAR.IMAGE;
-
         const mindarThree = new MindARThree({
           container,
           imageTargetSrc: IMAGE_TARGET_SRC,
@@ -398,7 +409,7 @@
         // Anchor that attaches content to the first marker (index 0).
         const anchor = mindarThree.addAnchor(0);
 
-        const gltfLoader = new THREE.GLTFLoader();
+        const gltfLoader = new GLTFLoader();
         let mixerAR = null;
 
         gltfLoader.load(
@@ -441,4 +452,3 @@
     </script>
   </body>
 </html>
-
