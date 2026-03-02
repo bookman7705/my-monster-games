@@ -2,19 +2,23 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Marker AR Demo 12</title>
+<title>Marker AR Fixed</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <style>
   body, html { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000; }
-  #ar-container { width:100%; height:100%; position:relative; }
+  #ar-container { position:absolute; inset:0; }
   #error-overlay {
-    position: fixed; inset:0; background: rgba(0,0,0,0.85); color:#f55; display:flex;
-    align-items:center; justify-content:center; text-align:center; padding:20px; font-family:sans-serif; font-size:14px;
-    z-index: 9999; display: none;
+    position: fixed; inset:0; background: rgba(0,0,0,0.85); color:#fff;
+    display:flex; align-items:center; justify-content:center; text-align:center;
+    padding:20px; font-family:sans-serif; font-size:14px; z-index: 9999;
   }
 </style>
 
-<!-- Import maps for Three.js & MindAR (ES modules) -->
+<!-- Eruda for mobile console -->
+<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+<script>eruda.init();</script>
+
+<!-- Import maps for ES module loading -->
 <script type="importmap">
 {
   "imports": {
@@ -24,70 +28,66 @@
   }
 }
 </script>
-
-<!-- Eruda for mobile console (optional) -->
-<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-<script>eruda.init();</script>
 </head>
+
 <body>
 <div id="ar-container"></div>
-<div id="error-overlay"></div>
+<div id="error-overlay">Tap the screen to start AR and enable camera</div>
 
 <script type="module">
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MindARThree } from "mindar-image-three";
 
+const AR_CONTAINER = document.getElementById("ar-container");
 const errorOverlay = document.getElementById("error-overlay");
+
 function showError(msg) {
   console.error(msg);
   errorOverlay.innerText = msg;
   errorOverlay.style.display = "flex";
 }
 
-// Main async wrapper
-(async () => {
-  // Check camera support
+async function initAR() {
+  // Check camera API support
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     showError("Camera API not supported. Use HTTPS or a modern browser.");
     return;
   }
 
-  const IMAGE_TARGET_SRC = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/Trex.mind";
-  const MODEL_SRC = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb";
+  const IMAGE_TARGET = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/Trex.mind";
+  const MODEL_GLTF   = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb";
 
   try {
-    const mindarThree = new MindARThree({
-      container: document.getElementById("ar-container"),
-      imageTargetSrc: IMAGE_TARGET_SRC,
+    const mindar = new MindARThree({
+      container: AR_CONTAINER,
+      imageTargetSrc: IMAGE_TARGET,
       uiLoading: "yes",
       uiScanning: "yes",
+      alpha: true
     });
 
-    const { renderer, scene, camera } = mindarThree;
-
-    // Ensure WebGL background is transparent so camera video shows through
-    renderer.setClearColor(0x000000, 0);
+    const { renderer, scene, camera } = mindar;
 
     // Lights
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x111111, 1.0);
-    scene.add(hemiLight);
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(1, 3, 2);
-    scene.add(dirLight);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x111111, 1);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir.position.set(1,3,2);
+    scene.add(dir);
 
     // Anchor for marker
-    const anchor = mindarThree.addAnchor(0);
+    const anchor = mindar.addAnchor(0);
 
-    // Load model
+    // Load GLB model
     const loader = new GLTFLoader();
-    let mixer = null;
+    let mixer;
     loader.load(
-      MODEL_SRC,
-      (gltf) => {
+      MODEL_GLTF,
+      gltf => {
         const model = gltf.scene;
-        model.scale.set(0.5, 0.5, 0.5);
-        model.position.set(0, 0, 0);
+        model.scale.set(0.5,0.5,0.5);
+        model.position.set(0,0,0);
         anchor.group.add(model);
 
         if (gltf.animations && gltf.animations.length > 0) {
@@ -97,180 +97,47 @@ function showError(msg) {
         }
       },
       undefined,
-      (err) => showError("Failed to load GLB model: " + err)
+      err => showError("Failed to load GLB model: " + err)
     );
 
     const clock = new THREE.Clock();
 
-    // On iOS, camera must start after a user gesture
-    const startAR = async () => {
-      try {
-        await mindarThree.start();
-        errorOverlay.style.display = "none";
-        renderer.setAnimationLoop(() => {
-          const delta = clock.getDelta();
-          if (mixer) mixer.update(delta);
-          renderer.render(scene, camera);
-        });
-      } catch (err) {
-        showError("AR initialization failed: " + err);
-      }
-    };
+    // Start MindAR + set video attributes to fix black feed
+    await mindar.start();
 
-    // Trigger start on first touch/click
-    document.body.addEventListener("click", startAR, { once: true });
+    // Hide overlay after start
+    errorOverlay.style.display = "none";
 
-    // Optional: resize handling
+    // Fix camera video on iOS/Android
+    const videoEl = document.querySelector("video");
+    if (videoEl) {
+      videoEl.setAttribute("playsinline", "");
+      videoEl.setAttribute("muted", "");
+      videoEl.setAttribute("autoplay", "");
+      videoEl.style.objectFit = "cover";
+    }
+
+    renderer.setAnimationLoop(() => {
+      const delta = clock.getDelta();
+      if (mixer) mixer.update(delta);
+      renderer.render(scene, camera);
+    });
+
+    // Handle window resize
     window.addEventListener("resize", () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // Prompt user to tap screen
-    errorOverlay.style.display = "flex";
-    errorOverlay.innerText = "Tap the screen to start AR and enable camera.";
-    errorOverlay.style.color = "#fff";
-  } catch (err) {
+  } catch(err) {
     showError("Unexpected error initializing AR: " + err);
   }
-})();
-</script>
-</body>
-</html><!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Marker AR Demo 2</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<style>
-  body, html { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000; }
-  #ar-container { width:100%; height:100%; position:relative; }
-  #error-overlay {
-    position: fixed; inset:0; background: rgba(0,0,0,0.85); color:#f55; display:flex;
-    align-items:center; justify-content:center; text-align:center; padding:20px; font-family:sans-serif; font-size:14px;
-    z-index: 9999; display: none;
-  }
-</style>
-
-<!-- Import maps for Three.js & MindAR (ES modules) -->
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
-    "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
-  }
-}
-</script>
-
-<!-- Eruda for mobile console (optional) -->
-<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-<script>eruda.init();</script>
-</head>
-<body>
-<div id="ar-container"></div>
-<div id="error-overlay"></div>
-
-<script type="module">
-import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { MindARThree } from "mindar-image-three";
-
-const errorOverlay = document.getElementById("error-overlay");
-function showError(msg) {
-  console.error(msg);
-  errorOverlay.innerText = msg;
-  errorOverlay.style.display = "flex";
 }
 
-// Main async wrapper
-(async () => {
-  // Check camera support
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    showError("Camera API not supported. Use HTTPS or a modern browser.");
-    return;
-  }
+// iOS requires a user gesture to start camera
+document.body.addEventListener("click", initAR, { once:true });
 
-  const IMAGE_TARGET_SRC = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/Trex.mind";
-  const MODEL_SRC = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb";
-
-  try {
-    const mindarThree = new MindARThree({
-      container: document.getElementById("ar-container"),
-      imageTargetSrc: IMAGE_TARGET_SRC,
-      uiLoading: "yes",
-      uiScanning: "yes",
-    });
-
-    const { renderer, scene, camera } = mindarThree;
-
-    // Lights
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x111111, 1.0);
-    scene.add(hemiLight);
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(1, 3, 2);
-    scene.add(dirLight);
-
-    // Anchor for marker
-    const anchor = mindarThree.addAnchor(0);
-
-    // Load model
-    const loader = new GLTFLoader();
-    let mixer = null;
-    loader.load(
-      MODEL_SRC,
-      (gltf) => {
-        const model = gltf.scene;
-        model.scale.set(0.5, 0.5, 0.5);
-        model.position.set(0, 0, 0);
-        anchor.group.add(model);
-
-        if (gltf.animations && gltf.animations.length > 0) {
-          mixer = new THREE.AnimationMixer(model);
-          const action = mixer.clipAction(gltf.animations[0]);
-          action.play();
-        }
-      },
-      undefined,
-      (err) => showError("Failed to load GLB model: " + err)
-    );
-
-    const clock = new THREE.Clock();
-
-    // On iOS, camera must start after a user gesture
-    const startAR = async () => {
-      try {
-        await mindarThree.start();
-        errorOverlay.style.display = "none";
-        renderer.setAnimationLoop(() => {
-          const delta = clock.getDelta();
-          if (mixer) mixer.update(delta);
-          renderer.render(scene, camera);
-        });
-      } catch (err) {
-        showError("AR initialization failed: " + err);
-      }
-    };
-
-    // Trigger start on first touch/click
-    document.body.addEventListener("click", startAR, { once: true });
-
-    // Optional: resize handling
-    window.addEventListener("resize", () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
-
-    // Prompt user to tap screen
-    errorOverlay.style.display = "flex";
-    errorOverlay.innerText = "Tap the screen to start AR and enable camera.";
-    errorOverlay.style.color = "#fff";
-  } catch (err) {
-    showError("Unexpected error initializing AR: " + err);
-  }
-})();
 </script>
 </body>
 </html>
