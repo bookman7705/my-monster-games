@@ -2,23 +2,37 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Marker AR Fixed 2</title>
+<title>Marker AR Fixed Android</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+
 <style>
-  body, html { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000; }
-  #ar-container { position:absolute; inset:0; }
-  #error-overlay {
-    position: fixed; inset:0; background: rgba(0,0,0,0.85); color:#fff;
-    display:flex; align-items:center; justify-content:center; text-align:center;
-    padding:20px; font-family:sans-serif; font-size:14px; z-index: 9999;
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    background: #000;
+  }
+  #ar-container {
+    position: fixed;
+    inset: 0;
+  }
+  #start-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.9);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-family: sans-serif;
+    z-index: 10;
   }
 </style>
 
-<!-- Eruda for mobile console -->
-<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-<script>eruda.init();</script>
-
-<!-- Import maps for ES module loading -->
+<!-- Import maps -->
 <script type="importmap">
 {
   "imports": {
@@ -31,117 +45,93 @@
 </head>
 
 <body>
+
 <div id="ar-container"></div>
-<div id="error-overlay">Tap the screen to start AR and enable camera</div>
+<div id="start-overlay">Tap anywhere to start AR</div>
 
 <script type="module">
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MindARThree } from "mindar-image-three";
 
-const AR_CONTAINER = document.getElementById("ar-container");
-const errorOverlay = document.getElementById("error-overlay");
+const container = document.querySelector("#ar-container");
+const overlay = document.querySelector("#start-overlay");
 
-function showError(msg) {
-  console.error(msg);
-  errorOverlay.innerText = msg;
-  errorOverlay.style.display = "flex";
-}
+let mindar;
+let mixer;
 
-async function initAR() {
-  // Check camera API support
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    showError("Camera API not supported. Use HTTPS or a modern browser.");
-    return;
-  }
+async function startAR() {
 
-  const IMAGE_TARGET = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/Trex.mind";
-  const MODEL_GLTF   = "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb";
+  overlay.style.display = "none";
 
-  try {
-    const mindar = new MindARThree({
-      container: AR_CONTAINER,
-      imageTargetSrc: IMAGE_TARGET,
-      uiLoading: "yes",
-      uiScanning: "yes",
-      alpha: true
-    });
+  // Initialize MindAR with smoothing filters
+  mindar = new MindARThree({
+    container: container,
+    imageTargetSrc: "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/Trex.mind",
+    uiLoading: "yes",
+    uiScanning: "yes",
+    alpha: true,
 
-    const { renderer, scene, camera } = mindar;
+    // Anti-jitter filters (important for Android)
+    filterMinCF: 0.0001,
+    filterBeta: 0.01
+  });
 
-    // Ensure WebGL background is transparent so the camera video can show through
-    renderer.setClearColor(0x000000, 0);
+  const { renderer, scene, camera } = mindar;
 
-    // Lights
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x111111, 1);
-    scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
-    dir.position.set(1,3,2);
-    scene.add(dir);
+  // Important for Android rendering
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x000000, 0);
 
-    // Anchor for marker
-    const anchor = mindar.addAnchor(0);
+  // Lighting
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x111111, 1.2);
+  scene.add(hemi);
 
-    // Load GLB model
-    const loader = new GLTFLoader();
-    let mixer;
-    loader.load(
-      MODEL_GLTF,
-      gltf => {
-        const model = gltf.scene;
-        model.scale.set(0.5,0.5,0.5);
-        model.position.set(0,0,0);
-        anchor.group.add(model);
+  const dir = new THREE.DirectionalLight(0xffffff, 1);
+  dir.position.set(1, 3, 2);
+  scene.add(dir);
 
-        if (gltf.animations && gltf.animations.length > 0) {
-          mixer = new THREE.AnimationMixer(model);
-          const action = mixer.clipAction(gltf.animations[0]);
-          action.play();
-        }
-      },
-      undefined,
-      err => showError("Failed to load GLB model: " + err)
-    );
+  // Anchor
+  const anchor = mindar.addAnchor(0);
 
-    const clock = new THREE.Clock();
+  // Load GLB model
+  const loader = new GLTFLoader();
+  loader.load(
+    "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb",
+    (gltf) => {
+      const model = gltf.scene;
 
-    // Start MindAR
-    await mindar.start();
+      // Slightly larger scale reduces visible jitter
+      model.scale.set(0.7, 0.7, 0.7);
 
-    // Hide overlay after start
-    errorOverlay.style.display = "none";
+      anchor.group.add(model);
 
-    // Ensure camera video element is sized and stacked correctly
-    if (mindar.video) {
-      mindar.video.setAttribute("playsinline", "");
-      mindar.video.setAttribute("muted", "");
-      mindar.video.setAttribute("autoplay", "");
-      mindar.video.style.objectFit = "cover";
-      mindar.video.style.width = "100%";
-      mindar.video.style.height = "100%";
-      mindar.video.style.zIndex = "-1";
+      if (gltf.animations.length > 0) {
+        mixer = new THREE.AnimationMixer(model);
+        mixer.clipAction(gltf.animations[0]).play();
+      }
+    },
+    undefined,
+    (err) => {
+      console.error("Model load error:", err);
+      alert("Failed to load 3D model.");
     }
+  );
 
-    renderer.setAnimationLoop(() => {
-      const delta = clock.getDelta();
-      if (mixer) mixer.update(delta);
-      renderer.render(scene, camera);
-    });
+  const clock = new THREE.Clock();
 
-    // Handle window resize
-    window.addEventListener("resize", () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
+  await mindar.start();
 
-  } catch(err) {
-    showError("Unexpected error initializing AR: " + err);
-  }
+  renderer.setAnimationLoop(() => {
+    const delta = clock.getDelta();
+    if (mixer) mixer.update(delta);
+    renderer.render(scene, camera);
+  });
 }
 
-// iOS requires a user gesture to start camera
-document.body.addEventListener("click", initAR, { once:true });
+// Android & iOS require user gesture
+document.body.addEventListener("click", startAR, { once: true });
 
 </script>
 </body>
