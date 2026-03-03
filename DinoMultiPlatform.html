@@ -2,63 +2,65 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Island Viewer AR 3</title>
+<title>Island Viewer AR 1</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   body { margin: 0; overflow: hidden; background: #111; }
 </style>
+
+<!-- Load model-viewer (for iOS Quick Look) -->
+<script type="module"
+  src="https://unpkg.com/@google/model-viewer@latest/dist/model-viewer.min.js">
+</script>
+
 </head>
 <body>
 
+<!-- iOS AR (Quick Look) -->
 <model-viewer id="island-ar"
   src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb"
   ios-src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/TrexTrophy.usdz"
   ar
-  ar-modes="quick-look webxr scene-viewer"
+  ar-modes="quick-look"
   camera-controls
   auto-rotate
-  style="width: 100%; height: 100%; background: #111; display: none;">
+  style="width:100%; height:100%; background:#111; display:none;">
 </model-viewer>
 
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/"
-  }
-}
-</script>
-
-<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-<script>eruda.init();</script>
-
-<script type="module">
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { ARButton } from 'three/addons/webxr/ARButton.js';
-
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+<script>
+/* --------------------------
+   PLATFORM DETECTION
+---------------------------*/
+const isIOS =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-let scene, camera, renderer;
-let reticle;
-let hitTestSource = null;
-let hitTestSourceRequested = false;
-let model = null;
-let mixer = null;
-const clock = new THREE.Clock();
-
-if (!isIOS) {
-  init();
-  animate();
+if (isIOS) {
+  // Show model-viewer for iOS
+  document.getElementById('island-ar').style.display = 'block';
 } else {
-  const modelViewer = document.getElementById('island-ar');
-  if (modelViewer) {
-    modelViewer.style.display = 'block';
-  }
+  // Load Three.js AR dynamically for Android/Desktop
+  loadThreeAR();
 }
 
-function init() {
+/* --------------------------
+   ANDROID / WEBXR AR
+---------------------------*/
+async function loadThreeAR() {
+
+  const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js');
+  const { GLTFLoader } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js');
+  const { ARButton } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/webxr/ARButton.js');
+
+  let scene, camera, renderer;
+  let reticle;
+  let hitTestSource = null;
+  let hitTestSourceRequested = false;
+  let model = null;
+  let mixer = null;
+  const clock = new THREE.Clock();
+
+  /* ---------- INIT ---------- */
   scene = new THREE.Scene();
 
   camera = new THREE.PerspectiveCamera(
@@ -82,17 +84,19 @@ function init() {
   dirLight.position.set(5, 10, 2);
   scene.add(dirLight);
 
-  // Load GLB model
+  // Load GLB
   const loader = new GLTFLoader();
   loader.load(
     'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
     (gltf) => {
       model = gltf.scene;
-      model.scale.set(0.01,0.01, 0.01);  // scale 1:1
+
+      // Adjust scale if needed
+      model.scale.set(1, 1, 1);
+
       model.visible = false;
       scene.add(model);
 
-      // Animation support
       if (gltf.animations.length > 0) {
         mixer = new THREE.AnimationMixer(model);
         gltf.animations.forEach((clip) => {
@@ -118,74 +122,67 @@ function init() {
     requiredFeatures: ['hit-test', 'local-floor']
   }));
 
-  // Controller
+  // Tap placement
   const controller = renderer.xr.getController(0);
-  controller.addEventListener('select', onSelect);
+  controller.addEventListener('select', () => {
+    if (reticle.visible && model) {
+      model.visible = true;
+      model.position.setFromMatrixPosition(reticle.matrix);
+      model.quaternion.setFromRotationMatrix(reticle.matrix);
+    }
+  });
   scene.add(controller);
 
-  window.addEventListener('resize', onWindowResize);
-}
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
 
-function onSelect() {
-  if (reticle.visible && model) {
-    model.visible = true;
-    model.position.setFromMatrixPosition(reticle.matrix);
-    model.quaternion.setFromRotationMatrix(reticle.matrix);
-  }
-}
+  renderer.setAnimationLoop((timestamp, frame) => {
 
-function onWindowResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-}
+    const delta = clock.getDelta();
+    if (mixer) mixer.update(delta);
 
-function animate() {
-  renderer.setAnimationLoop(render);
-}
+    if (frame) {
+      const referenceSpace = renderer.xr.getReferenceSpace();
+      const session = renderer.xr.getSession();
 
-function render(timestamp, frame) {
-  const delta = clock.getDelta();
-  if (mixer) mixer.update(delta);
-
-  if (frame) {
-    const referenceSpace = renderer.xr.getReferenceSpace();
-    const session = renderer.xr.getSession();
-
-    if (!hitTestSourceRequested) {
-      session.requestReferenceSpace('viewer').then((viewerSpace) => {
-        session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-          hitTestSource = source;
+      if (!hitTestSourceRequested) {
+        session.requestReferenceSpace('viewer').then((viewerSpace) => {
+          session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+            hitTestSource = source;
+          });
         });
-      });
 
-      session.addEventListener('end', () => {
-        hitTestSourceRequested = false;
-        hitTestSource = null;
-      });
+        session.addEventListener('end', () => {
+          hitTestSourceRequested = false;
+          hitTestSource = null;
+        });
 
-      hitTestSourceRequested = true;
-    }
+        hitTestSourceRequested = true;
+      }
 
-    if (hitTestSource) {
-      const hitTestResults = frame.getHitTestResults(hitTestSource);
+      if (hitTestSource) {
+        const hitTestResults = frame.getHitTestResults(hitTestSource);
 
-      if (hitTestResults.length) {
-        const hit = hitTestResults[0];
-        const pose = hit.getPose(referenceSpace);
+        if (hitTestResults.length > 0) {
+          const hit = hitTestResults[0];
+          const pose = hit.getPose(referenceSpace);
 
-        reticle.visible = true;
-        reticle.matrix.fromArray(pose.transform.matrix);
-      } else {
-        reticle.visible = false;
+          reticle.visible = true;
+          reticle.matrix.fromArray(pose.transform.matrix);
+        } else {
+          reticle.visible = false;
+        }
       }
     }
-  }
 
-  renderer.render(scene, camera);
+    renderer.render(scene, camera);
+  });
+
 }
 </script>
-<script type="module" src="https://unpkg.com/@google/model-viewer@latest/dist/model-viewer.min.js"></script>
 
 </body>
 </html>
