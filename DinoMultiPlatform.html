@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Island Viewer AR 1</title>
+<title>Island Viewer AR 2</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   body { margin: 0; overflow: hidden; background: #111; }
@@ -28,7 +28,7 @@
 <!-- iOS AR (Quick Look) -->
 <model-viewer id="island-ar"
   src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb"
-  ios-src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/TrexTrophy.usdz"
+  ios-src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.usdz"
   ar
   ar-modes="quick-look"
   camera-controls
@@ -71,6 +71,11 @@ async function loadThreeAR() {
   let model = null;
   let mixer = null;
   const clock = new THREE.Clock();
+  let mainAction = null;
+  const ROAR_TIME = 14.5;
+  let roarPlayedThisLoop = false;
+  let prevActionTime = 0;
+  const roarSound = new Audio('roar1.mp3');
 
   /* ---------- INIT ---------- */
   scene = new THREE.Scene();
@@ -111,8 +116,12 @@ async function loadThreeAR() {
 
       if (gltf.animations.length > 0) {
         mixer = new THREE.AnimationMixer(model);
-        gltf.animations.forEach((clip) => {
-          mixer.clipAction(clip).play();
+        gltf.animations.forEach((clip, index) => {
+          const action = mixer.clipAction(clip);
+          if (index === 0) {
+            mainAction = action;
+          }
+          action.play();
         });
       }
     },
@@ -154,7 +163,32 @@ async function loadThreeAR() {
   renderer.setAnimationLoop((timestamp, frame) => {
 
     const delta = clock.getDelta();
-    if (mixer) mixer.update(delta);
+    if (mixer) {
+      mixer.update(delta);
+
+      if (mainAction) {
+        const duration = mainAction.getClip().duration || 0;
+        if (duration > 0) {
+          const localTime = mainAction.time % duration;
+
+          if (!roarPlayedThisLoop && localTime >= ROAR_TIME) {
+            try {
+              roarSound.currentTime = 0;
+              roarSound.play();
+            } catch (e) {
+              // Ignore autoplay or play errors
+            }
+            roarPlayedThisLoop = true;
+          }
+
+          if (localTime < prevActionTime) {
+            roarPlayedThisLoop = false;
+          }
+
+          prevActionTime = localTime;
+        }
+      }
+    }
 
     if (frame) {
       const referenceSpace = renderer.xr.getReferenceSpace();
