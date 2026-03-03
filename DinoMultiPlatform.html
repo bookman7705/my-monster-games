@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Island Viewer AR 2</title>
+<title>Island Viewer AR 3</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   body { margin: 0; overflow: hidden; background: #111; }
@@ -11,6 +11,15 @@
 <!-- Load model-viewer (for iOS Quick Look) -->
 <script type="module"
   src="https://unpkg.com/@google/model-viewer@latest/dist/model-viewer.min.js">
+</script>
+
+<!-- Import map to resolve the bare "three" specifier used by Three.js examples -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js"
+  }
+}
 </script>
 
 </head>
@@ -51,7 +60,7 @@ if (isIOS) {
 ---------------------------*/
 async function loadThreeAR() {
 
-  const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js');
+  const THREE = await import('three');
   const { GLTFLoader } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js');
   const { ARButton } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/webxr/ARButton.js');
 
