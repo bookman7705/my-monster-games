@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Marker AR Fixed 5</title>
+<title>Marker AR Fixed 6</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <style>
   body, html { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#000; }
@@ -156,9 +156,12 @@ async function initAR() {
       if (mixer) mixer.update(delta);
 
       // Stabilize: lerp/slerp smoothed group toward raw anchor pose to reduce jitter
-      if (anchor.group.visible) {
-        anchor.group.getWorldPosition(_tempPos);
-        anchor.group.getWorldQuaternion(_tempQuat);
+      scene.updateMatrixWorld(true);
+      anchor.group.getWorldPosition(_tempPos);
+      anchor.group.getWorldQuaternion(_tempQuat);
+      // Treat target as found when pose is non-zero (MindAR sets matrix to zero when lost)
+      const targetFound = _tempPos.lengthSq() > 1e-6;
+      if (targetFound) {
         if (!smoothedInitialized) {
           smoothedGroup.position.copy(_tempPos);
           smoothedGroup.quaternion.copy(_tempQuat);
