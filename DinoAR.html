@@ -2,51 +2,51 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Marker AR Stable 1</title>
+<title>Stable AR 2</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 
 <style>
 body,html{
-  margin:0;
-  padding:0;
-  width:100%;
-  height:100%;
-  overflow:hidden;
-  background:#000;
+margin:0;
+padding:0;
+width:100%;
+height:100%;
+overflow:hidden;
+background:#000;
 }
 
 #ar-container{
-  position:absolute;
-  inset:0;
+position:absolute;
+inset:0;
 }
 
 #ar-container video{
-  position:absolute!important;
-  width:100%!important;
-  height:100%!important;
-  object-fit:cover!important;
-  z-index:0!important;
+position:absolute!important;
+width:100%!important;
+height:100%!important;
+object-fit:cover!important;
+z-index:0!important;
 }
 
 #ar-container canvas{
-  position:absolute!important;
-  width:100%!important;
-  height:100%!important;
-  z-index:1!important;
+position:absolute!important;
+width:100%!important;
+height:100%!important;
+z-index:1!important;
 }
 
 #error-overlay{
-  position:fixed;
-  inset:0;
-  background:rgba(0,0,0,0.85);
-  color:white;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  text-align:center;
-  padding:20px;
-  font-family:sans-serif;
-  z-index:9999;
+position:fixed;
+inset:0;
+background:rgba(0,0,0,0.85);
+color:#fff;
+display:flex;
+align-items:center;
+justify-content:center;
+text-align:center;
+padding:20px;
+font-family:sans-serif;
+z-index:9999;
 }
 </style>
 
@@ -55,14 +55,13 @@ body,html{
 
 <script type="importmap">
 {
- "imports": {
-   "three":"https://unpkg.com/three@0.160.0/build/three.module.js",
-   "three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/",
-   "mindar-image-three":"https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
- }
+"imports":{
+"three":"https://unpkg.com/three@0.160.0/build/three.module.js",
+"three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/",
+"mindar-image-three":"https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+}
 }
 </script>
-
 </head>
 
 <body>
@@ -82,11 +81,11 @@ const overlay=document.querySelector("#error-overlay");
 async function startAR(){
 
 const mindar=new MindARThree({
-  container:container,
-  imageTargetSrc:"https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/Trex.mind",
-  uiScanning:"yes",
-  uiLoading:"yes",
-  alpha:true
+container:container,
+imageTargetSrc:"https://raw.githubusercontent.com/bookman7705/my-monster-games/main/mind/Trex.mind",
+uiScanning:"yes",
+uiLoading:"yes",
+alpha:true
 });
 
 const {renderer,scene,camera}=mindar;
@@ -102,18 +101,8 @@ scene.add(dir);
 
 const anchor=mindar.addAnchor(0);
 
-const smoothRoot=new THREE.Group();
-scene.add(smoothRoot);
-
-let targetVisible=false;
-
-anchor.onTargetFound=()=>{
-  targetVisible=true;
-};
-
-anchor.onTargetLost=()=>{
-  targetVisible=false;
-};
+const smoothGroup=new THREE.Group();
+anchor.group.add(smoothGroup);
 
 const loader=new GLTFLoader();
 let mixer;
@@ -124,32 +113,36 @@ loader.load(
 
 const model=gltf.scene;
 
-model.scale.set(0.25,0.25,0.25);
+model.scale.set(0.5,0.5,0.5);
+model.position.set(0,0,0);
 model.rotation.set(0,0,0);
 
-smoothRoot.add(model);
+smoothGroup.add(model);
 
-if(gltf.animations.length){
-  mixer=new THREE.AnimationMixer(model);
-  mixer.clipAction(gltf.animations[0]).play();
+if(gltf.animations.length>0){
+mixer=new THREE.AnimationMixer(model);
+mixer.clipAction(gltf.animations[0]).play();
 }
 
 }
 );
-
-const clock=new THREE.Clock();
 
 await mindar.start();
 
 overlay.style.display="none";
 
 if(mindar.video){
-  mindar.video.setAttribute("playsinline","");
-  mindar.video.setAttribute("autoplay","");
-  mindar.video.setAttribute("muted","");
+mindar.video.setAttribute("playsinline","");
+mindar.video.setAttribute("autoplay","");
+mindar.video.setAttribute("muted","");
 }
 
-const SMOOTH=0.2;
+const clock=new THREE.Clock();
+
+const targetPos=new THREE.Vector3();
+const targetQuat=new THREE.Quaternion();
+
+const SMOOTH=0.15;
 
 renderer.setAnimationLoop(()=>{
 
@@ -157,19 +150,11 @@ const delta=clock.getDelta();
 
 if(mixer) mixer.update(delta);
 
-if(targetVisible){
+targetPos.copy(anchor.group.position);
+targetQuat.copy(anchor.group.quaternion);
 
-smoothRoot.visible=true;
-
-smoothRoot.position.lerp(anchor.group.position,SMOOTH);
-
-smoothRoot.quaternion.slerp(anchor.group.quaternion,SMOOTH);
-
-}else{
-
-smoothRoot.visible=false;
-
-}
+smoothGroup.position.lerp(targetPos,SMOOTH);
+smoothGroup.quaternion.slerp(targetQuat,SMOOTH);
 
 renderer.render(scene,camera);
 
