@@ -114,6 +114,7 @@ async function initAR() {
         const model = gltf.scene;
         model.scale.set(0.5,0.5,0.5);
         model.position.set(0,0,0);
+        model.rotation.set(0, 0, 0);
         anchor.group.add(model);
 
         if (gltf.animations && gltf.animations.length > 0) {
