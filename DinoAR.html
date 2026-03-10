@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Stable AR 2 (Smoothed)</title>
+<title>Stable AR 5</title>
 
 <script type="importmap">
 {
@@ -20,11 +20,7 @@ import * as THREE from 'three';
 import { MindARThree } from 'mindar-image-three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-const SMOOTHING = 0.15; // lower = smoother but laggier
-
-/* =========================
-   MINDAR SETUP
-========================= */
+const SMOOTHING = 0.15;
 
 const mindarThree = new MindARThree({
   container: document.querySelector("#container"),
@@ -38,16 +34,12 @@ renderer.outputEncoding = THREE.sRGBEncoding;
 
 const anchor = mindarThree.addAnchor(0);
 
-/* =========================
-   SMOOTH GROUP
-========================= */
+/* SMOOTH CONTAINER INSIDE ANCHOR */
 
 const smoothGroup = new THREE.Group();
-scene.add(smoothGroup);
+anchor.group.add(smoothGroup);
 
-/* =========================
-   LIGHTING
-========================= */
+/* LIGHTING */
 
 const light1 = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
 scene.add(light1);
@@ -56,9 +48,7 @@ const light2 = new THREE.DirectionalLight(0xffffff, 1);
 light2.position.set(0, 5, 5);
 scene.add(light2);
 
-/* =========================
-   MODEL LOADING
-========================= */
+/* MODEL */
 
 const loader = new GLTFLoader();
 let mixer;
@@ -72,11 +62,7 @@ loader.load(
 
     model.scale.set(0.20, 0.20, 0.20);
 
-    model.position.set(
-      0,
-      0,
-      0
-    );
+    model.position.set(0,0,0);
 
     model.rotation.set(
       Math.PI / 2,
@@ -86,40 +72,23 @@ loader.load(
 
     smoothGroup.add(model);
 
-    /* =========================
-       ANIMATION
-    ========================= */
-
     if (gltf.animations.length > 0) {
 
       mixer = new THREE.AnimationMixer(model);
-
       const action = mixer.clipAction(gltf.animations[0]);
-
       action.loop = THREE.LoopRepeat;
-
       action.play();
 
     }
 
-  },
-
-  undefined,
-
-  (error) => {
-    console.error("Model load error:", error);
   }
 );
 
-/* =========================
-   CLOCK
-========================= */
+/* CLOCK */
 
 const clock = new THREE.Clock();
 
-/* =========================
-   START
-========================= */
+/* START */
 
 const start = async () => {
 
@@ -131,13 +100,12 @@ const start = async () => {
 
     if (mixer) mixer.update(delta);
 
-    /* =========================
-       SMOOTH FOLLOW
-    ========================= */
+    /* SMOOTH THE MODEL INSIDE THE ANCHOR */
 
-    smoothGroup.position.lerp(anchor.group.position, SMOOTHING);
-    smoothGroup.quaternion.slerp(anchor.group.quaternion, SMOOTHING);
-    smoothGroup.scale.lerp(anchor.group.scale, SMOOTHING);
+    smoothGroup.position.lerp(
+      new THREE.Vector3(0,0,0),
+      SMOOTHING
+    );
 
     renderer.render(scene, camera);
 
@@ -145,9 +113,7 @@ const start = async () => {
 
 };
 
-/* =========================
-   BUTTONS
-========================= */
+/* BUTTONS */
 
 const startButton = document.querySelector("#startButton");
 const stopButton = document.querySelector("#stopButton");
@@ -157,22 +123,9 @@ startButton.addEventListener("click", start);
 stopButton.addEventListener("click", () => {
 
   mindarThree.stop();
-
   renderer.setAnimationLoop(null);
 
 });
-
-/* =========================
-   TRACKING EVENTS
-========================= */
-
-anchor.onTargetFound = () => {
-  console.log("Target found");
-};
-
-anchor.onTargetLost = () => {
-  console.log("Target lost");
-};
 
 </script>
 
