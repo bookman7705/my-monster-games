@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Stable AR 3</title>
+<title>Stable AR Optimized</title>
 
 <script type="importmap">
 {
@@ -20,107 +20,144 @@ import * as THREE from 'three';
 import { MindARThree } from 'mindar-image-three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-const SMOOTHING = 0.05;
+/* =========================
+   SMOOTHING SETTINGS
+========================= */
+
+const POSITION_SMOOTH = 0.08;
+const ROTATION_SMOOTH = 0.08;
+
+/* =========================
+   MINDAR SETUP
+========================= */
 
 const mindarThree = new MindARThree({
   container: document.querySelector("#container"),
   imageTargetSrc:
-  "https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.mind"
+  "https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.2.5/examples/image-tracking/assets/card-example/card.mind",
+
+  /* built-in pose filtering */
+  filterMinCF: 0.0001,
+  filterBeta: 0.01
 });
 
 const { renderer, scene, camera } = mindarThree;
 
 renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+
+/* =========================
+   ANCHOR
+========================= */
 
 const anchor = mindarThree.addAnchor(0);
 
-/* SMOOTH CONTAINER INSIDE ANCHOR */
+/* Stabilized container */
+const stabilizedGroup = new THREE.Group();
+scene.add(stabilizedGroup);
 
-const smoothGroup = new THREE.Group();
-anchor.group.add(smoothGroup);
+/* =========================
+   LIGHTING
+========================= */
 
-/* LIGHTING */
+const hemi = new THREE.HemisphereLight(0xffffff,0xbbbbff,1);
+scene.add(hemi);
 
-const light1 = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
-scene.add(light1);
+const dir = new THREE.DirectionalLight(0xffffff,1);
+dir.position.set(0,5,5);
+scene.add(dir);
 
-const light2 = new THREE.DirectionalLight(0xffffff, 1);
-light2.position.set(0, 5, 5);
-scene.add(light2);
-
-/* MODEL */
+/* =========================
+   MODEL
+========================= */
 
 const loader = new GLTFLoader();
 let mixer;
 
 loader.load(
-  "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb",
+"https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb",
+(gltf)=>{
 
-  (gltf) => {
+  const model = gltf.scene;
 
-    const model = gltf.scene;
+  model.scale.set(0.20,0.20,0.20);
+  model.rotation.set(Math.PI/2,0,0);
 
-    model.scale.set(0.20, 0.20, 0.20);
+  stabilizedGroup.add(model);
 
-    model.position.set(0,0,0);
+  if(gltf.animations.length>0){
 
-    model.rotation.set(
-      Math.PI / 2,
-      0,
-      0
-    );
+    mixer = new THREE.AnimationMixer(model);
 
-    smoothGroup.add(model);
-
-    if (gltf.animations.length > 0) {
-
-      mixer = new THREE.AnimationMixer(model);
-      const action = mixer.clipAction(gltf.animations[0]);
-      action.loop = THREE.LoopRepeat;
-      action.play();
-
-    }
+    const action = mixer.clipAction(gltf.animations[0]);
+    action.loop = THREE.LoopRepeat;
+    action.play();
 
   }
-);
 
-/* CLOCK */
+});
+
+/* =========================
+   SMOOTHING HELPERS
+========================= */
+
+const targetPos = new THREE.Vector3();
+const targetQuat = new THREE.Quaternion();
+
+/* =========================
+   CLOCK
+========================= */
 
 const clock = new THREE.Clock();
 
-/* START */
+/* =========================
+   START
+========================= */
 
 const start = async () => {
 
   await mindarThree.start();
 
-  renderer.setAnimationLoop(() => {
+  renderer.setAnimationLoop(()=>{
 
     const delta = clock.getDelta();
 
-    if (mixer) mixer.update(delta);
+    if(mixer) mixer.update(delta);
 
-    /* SMOOTH THE MODEL INSIDE THE ANCHOR */
+    /* get anchor pose */
 
-    smoothGroup.position.lerp(
-      new THREE.Vector3(0,0,0),
-      SMOOTHING
+    anchor.group.getWorldPosition(targetPos);
+    anchor.group.getWorldQuaternion(targetQuat);
+
+    /* smooth position */
+
+    stabilizedGroup.position.lerp(
+      targetPos,
+      POSITION_SMOOTH
     );
 
-    renderer.render(scene, camera);
+    /* smooth rotation */
+
+    stabilizedGroup.quaternion.slerp(
+      targetQuat,
+      ROTATION_SMOOTH
+    );
+
+    renderer.render(scene,camera);
 
   });
 
 };
 
-/* BUTTONS */
+/* =========================
+   BUTTONS
+========================= */
 
-const startButton = document.querySelector("#startButton");
-const stopButton = document.querySelector("#stopButton");
+document.querySelector("#startButton")
+.addEventListener("click",start);
 
-startButton.addEventListener("click", start);
-
-stopButton.addEventListener("click", () => {
+document.querySelector("#stopButton")
+.addEventListener("click",()=>{
 
   mindarThree.stop();
   renderer.setAnimationLoop(null);
