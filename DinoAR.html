@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Stable AR 3</title>
+<title>Stable AR 4</title>
 <script type="importmap">
 {
   "imports": {
@@ -55,7 +55,7 @@ loader.load(
        MODEL TRANSFORM SETTINGS
        ========================= */
 
-    model.scale.set(0.30, 0.30, 0.30);
+    model.scale.set(0.20, 0.20, 0.20);
 
     model.position.set(
       0,    // X
@@ -66,7 +66,7 @@ loader.load(
     model.rotation.set(
       0,    // X
       0,    // Y
-      0     // Z - Math.PI / 2
+      Math.PI / 2     // Z - Math.PI / 2
     );
 
     anchor.group.add(model);
