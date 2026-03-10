@@ -40,23 +40,21 @@ renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
 
 /* =====================
-   ANCHOR & SMOOTH GROUP
+   ANCHOR & MODEL GROUP
 ===================== */
 const anchor = mindarThree.addAnchor(0);
 
-/* Smoothed model group attached to anchor */
+/* Smoothed model group attached directly to the anchor */
 const smoothedGroup = new THREE.Group();
 anchor.group.add(smoothedGroup);
 
 /* =====================
    LIGHTING
 ===================== */
-const hemi = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
-scene.add(hemi);
-
-const dir = new THREE.DirectionalLight(0xffffff, 1);
-dir.position.set(0, 5, 5);
-scene.add(dir);
+scene.add(new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+dirLight.position.set(0,5,5);
+scene.add(dirLight);
 
 /* =====================
    MODEL LOADING
@@ -69,10 +67,14 @@ loader.load(
   (gltf) => {
     const model = gltf.scene;
     model.scale.set(0.2, 0.2, 0.2);
-    model.rotation.set(Math.PI / 2, 0, 0);
+    model.rotation.set(Math.PI/2, 0, 0);
+
+    /* initially at origin of smoothed group */
+    model.position.set(0,0,0);
+
     smoothedGroup.add(model);
 
-    if(gltf.animations.length > 0){
+    if (gltf.animations.length > 0) {
       mixer = new THREE.AnimationMixer(model);
       const action = mixer.clipAction(gltf.animations[0]);
       action.loop = THREE.LoopRepeat;
@@ -85,11 +87,9 @@ loader.load(
    CLOCK
 ===================== */
 const clock = new THREE.Clock();
-const targetPos = new THREE.Vector3();
-const targetQuat = new THREE.Quaternion();
 
 /* =====================
-   START
+   START LOOP
 ===================== */
 const start = async () => {
   await mindarThree.start();
@@ -98,12 +98,10 @@ const start = async () => {
     const delta = clock.getDelta();
     if(mixer) mixer.update(delta);
 
-    /* get anchor's local transform */
-    anchor.group.getWorldPosition(targetPos);
-    anchor.group.getWorldQuaternion(targetQuat);
+    /* Smooth the model relative to the anchor's local origin */
+    smoothedGroup.position.lerp(new THREE.Vector3(0,0,0), POSITION_SMOOTH);
 
-    /* smooth model relative to anchor */
-    smoothedGroup.position.lerp(targetPos, POSITION_SMOOTH);
+    const targetQuat = new THREE.Quaternion(); // identity rotation
     smoothedGroup.quaternion.slerp(targetQuat, ROTATION_SMOOTH);
 
     renderer.render(scene, camera);
@@ -118,11 +116,10 @@ document.querySelector("#stopButton").addEventListener("click", () => {
   mindarThree.stop();
   renderer.setAnimationLoop(null);
 });
-
 </script>
 
 <style>
-body { margin: 0; overflow: hidden; }
+body { margin:0; overflow:hidden; }
 #container { width:100vw; height:100vh; position:relative; overflow:hidden; }
 #control { position:fixed; top:0; left:0; z-index:2; background:white; padding:5px; }
 </style>
