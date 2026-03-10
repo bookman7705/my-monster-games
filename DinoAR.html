@@ -2,7 +2,8 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Stable AR 5</title>
+<title>Stable AR 2 (Smoothed)</title>
+
 <script type="importmap">
 {
   "imports": {
@@ -19,6 +20,12 @@ import * as THREE from 'three';
 import { MindARThree } from 'mindar-image-three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+const SMOOTHING = 0.15; // lower = smoother but laggier
+
+/* =========================
+   MINDAR SETUP
+========================= */
+
 const mindarThree = new MindARThree({
   container: document.querySelector("#container"),
   imageTargetSrc:
@@ -31,9 +38,17 @@ renderer.outputEncoding = THREE.sRGBEncoding;
 
 const anchor = mindarThree.addAnchor(0);
 
-let mixer;
+/* =========================
+   SMOOTH GROUP
+========================= */
 
-// lighting
+const smoothGroup = new THREE.Group();
+scene.add(smoothGroup);
+
+/* =========================
+   LIGHTING
+========================= */
+
 const light1 = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
 scene.add(light1);
 
@@ -41,8 +56,12 @@ const light2 = new THREE.DirectionalLight(0xffffff, 1);
 light2.position.set(0, 5, 5);
 scene.add(light2);
 
-// model loader
+/* =========================
+   MODEL LOADING
+========================= */
+
 const loader = new GLTFLoader();
+let mixer;
 
 loader.load(
   "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb",
@@ -51,29 +70,25 @@ loader.load(
 
     const model = gltf.scene;
 
-    /* =========================
-       MODEL TRANSFORM SETTINGS
-       ========================= */
-
     model.scale.set(0.20, 0.20, 0.20);
 
     model.position.set(
-      0,    // X
-      0,    // Y
-      0     // Z
+      0,
+      0,
+      0
     );
 
     model.rotation.set(
-      Math.PI / 2,    // X
-      0,    // Y
-      0     // Z - Math.PI / 2
+      Math.PI / 2,
+      0,
+      0
     );
 
-    anchor.group.add(model);
+    smoothGroup.add(model);
 
     /* =========================
        ANIMATION
-       ========================= */
+    ========================= */
 
     if (gltf.animations.length > 0) {
 
@@ -96,7 +111,15 @@ loader.load(
   }
 );
 
+/* =========================
+   CLOCK
+========================= */
+
 const clock = new THREE.Clock();
+
+/* =========================
+   START
+========================= */
 
 const start = async () => {
 
@@ -108,11 +131,23 @@ const start = async () => {
 
     if (mixer) mixer.update(delta);
 
+    /* =========================
+       SMOOTH FOLLOW
+    ========================= */
+
+    smoothGroup.position.lerp(anchor.group.position, SMOOTHING);
+    smoothGroup.quaternion.slerp(anchor.group.quaternion, SMOOTHING);
+    smoothGroup.scale.lerp(anchor.group.scale, SMOOTHING);
+
     renderer.render(scene, camera);
 
   });
 
 };
+
+/* =========================
+   BUTTONS
+========================= */
 
 const startButton = document.querySelector("#startButton");
 const stopButton = document.querySelector("#stopButton");
@@ -126,6 +161,18 @@ stopButton.addEventListener("click", () => {
   renderer.setAnimationLoop(null);
 
 });
+
+/* =========================
+   TRACKING EVENTS
+========================= */
+
+anchor.onTargetFound = () => {
+  console.log("Target found");
+};
+
+anchor.onTargetLost = () => {
+  console.log("Target lost");
+};
 
 </script>
 
