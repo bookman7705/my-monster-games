@@ -1,60 +1,169 @@
 <!DOCTYPE html>
+
 <html lang="en">
+
 <head>
 <meta charset="UTF-8">
 <title>Rex AR</title>
 
+<!-- model-viewer -->
+
 <script type="module"
-src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js">
-</script>
+src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+
+<!-- mobile debugger -->
 
 <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-<script>eruda.init();</script>
+
+<script>
+eruda.init();
+</script>
 
 <style>
+
 body{
 margin:0;
 background:#000;
 height:100vh;
+overflow:hidden;
+font-family:Arial, sans-serif;
 }
+
+/* model-viewer container */
 
 model-viewer{
 width:100%;
 height:100%;
+background:#000;
+--poster-color:#000;
 }
 
+/* BIG AR BUTTON */
+
 #ar-button{
+
 position:absolute;
-bottom:100px;
+
+bottom: calc(env(safe-area-inset-bottom) + 120px);
 left:50%;
+
 transform:translateX(-50%);
-padding:14px 24px;
-font-size:18px;
+
+/* 250% bigger */
+
+padding:36px 60px;
+font-size:42px;
+font-weight:bold;
+
 border:none;
-border-radius:10px;
+border-radius:16px;
+
 background:#00c3ff;
 color:white;
+
+box-shadow:0 10px 25px rgba(0,0,0,0.5);
+
 }
+
+/* Debug log window */
+
+#debug{
+
+position:absolute;
+
+top:0;
+left:0;
+
+width:100%;
+max-height:120px;
+
+overflow:auto;
+
+background:rgba(0,0,0,0.6);
+color:#00ff9c;
+
+font-size:12px;
+padding:6px;
+
+}
+
 </style>
+
 </head>
 
 <body>
 
+<div id="debug"></div>
+
 <model-viewer
+id="viewer"
+
 src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb"
 ios-src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.usdz"
+
 ar
-ar-modes="quick-look"
+ar-modes="quick-look scene-viewer webxr"
+
 camera-controls
-auto-rotate
 shadow-intensity="1"
-environment-image="neutral">
+environment-image="neutral"
+
+reveal="interaction"
+
+autoplay
+animation-name="*"
+
+>
 
 <button slot="ar-button" id="ar-button">
-View in AR
+START AR
 </button>
 
 </model-viewer>
+
+<script>
+
+const viewer = document.getElementById("viewer");
+const debug = document.getElementById("debug");
+
+function log(msg){
+console.log(msg);
+debug.innerHTML += msg + "<br>";
+}
+
+log("Page Loaded");
+log("UserAgent: " + navigator.userAgent);
+
+/* model loaded */
+
+viewer.addEventListener("load", () => {
+
+log("Model loaded");
+
+if(viewer.availableAnimations){
+log("Animations: " + viewer.availableAnimations.join(", "));
+}
+
+});
+
+/* error handler */
+
+viewer.addEventListener("error", (e) => {
+log("MODEL ERROR");
+console.log(e);
+});
+
+/* AR events */
+
+viewer.addEventListener("ar-status", (event) => {
+log("AR STATUS: " + event.detail.status);
+});
+
+viewer.addEventListener("ar-tracking", (event) => {
+log("AR TRACKING: " + event.detail.status);
+});
+
+</script>
 
 </body>
 </html>
