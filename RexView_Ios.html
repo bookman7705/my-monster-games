@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 
 <head>
@@ -7,162 +6,122 @@
 <title>Rex AR</title>
 
 <!-- model-viewer -->
-
 <script type="module"
 src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
 
 <!-- mobile debugger -->
-
 <script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-
-<script>
-eruda.init();
-</script>
+<script>eruda.init();</script>
 
 <style>
-
-body{
-margin:0;
-background:#000;
-height:100vh;
-overflow:hidden;
-font-family:Arial, sans-serif;
+body {
+  margin:0;
+  background:#000;
+  height:100vh;
+  overflow:hidden;
+  font-family:Arial, sans-serif;
 }
 
-/* model-viewer container */
-
 model-viewer{
-width:100%;
-height:100%;
-background:#000;
---poster-color:#000;
+  width:100%;
+  height:100%;
+  background:#000;
+  --poster-color:#000;
 }
 
 /* BIG AR BUTTON */
-
-#ar-button{
-
-position:absolute;
-
-bottom: calc(env(safe-area-inset-bottom) + 120px);
-left:50%;
-
-transform:translateX(-50%);
-
-/* 250% bigger */
-
-padding:36px 60px;
-font-size:42px;
-font-weight:bold;
-
-border:none;
-border-radius:16px;
-
-background:#00c3ff;
-color:white;
-
-box-shadow:0 10px 25px rgba(0,0,0,0.5);
-
+#ar-button {
+  position:absolute;
+  bottom: calc(env(safe-area-inset-bottom) + 120px);
+  left:50%;
+  transform:translateX(-50%);
+  padding:36px 60px;
+  font-size:42px;
+  font-weight:bold;
+  border:none;
+  border-radius:16px;
+  background:#00c3ff;
+  color:white;
+  text-decoration:none;
+  text-align:center;
+  display:inline-block;
+  box-shadow:0 10px 25px rgba(0,0,0,0.5);
 }
 
 /* Debug log window */
-
-#debug{
-
-position:absolute;
-
-top:0;
-left:0;
-
-width:100%;
-max-height:120px;
-
-overflow:auto;
-
-background:rgba(0,0,0,0.6);
-color:#00ff9c;
-
-font-size:12px;
-padding:6px;
-
+#debug {
+  position:absolute;
+  top:0;
+  left:0;
+  width:100%;
+  max-height:120px;
+  overflow:auto;
+  background:rgba(0,0,0,0.6);
+  color:#00ff9c;
+  font-size:12px;
+  padding:6px;
 }
-
 </style>
-
 </head>
 
 <body>
 
 <div id="debug"></div>
 
+<!-- Model preview -->
 <model-viewer
 id="viewer"
-
 src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb"
-ios-src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.usdz"
-
+ios-src="https://bookman7705.github.io/my-monster-games/rex.usdz" 
 ar
 ar-modes="quick-look scene-viewer webxr"
-
 camera-controls
 shadow-intensity="1"
 environment-image="neutral"
-
 reveal="interaction"
-
 autoplay
-animation-name="*"
-
->
-
-<button slot="ar-button" id="ar-button">
-START AR
-</button>
-
+animation-name="*">
 </model-viewer>
 
-<script>
+<!-- Big AR button for iOS Quick Look -->
+<a id="ar-button" rel="ar" href="https://bookman7705.github.io/my-monster-games/rex.usdz">
+START AR
+</a>
 
+<script>
+// Debug helper
 const viewer = document.getElementById("viewer");
 const debug = document.getElementById("debug");
 
 function log(msg){
-console.log(msg);
-debug.innerHTML += msg + "<br>";
+  console.log(msg);
+  debug.innerHTML += msg + "<br>";
 }
 
 log("Page Loaded");
 log("UserAgent: " + navigator.userAgent);
 
-/* model loaded */
+// Preload USDZ for first-time AR
+const usdzURL = "https://bookman7705.github.io/my-monster-games/rex.usdz";
+fetch(usdzURL).then(() => log("USDZ preloaded"));
 
+// Model load events
 viewer.addEventListener("load", () => {
-
-log("Model loaded");
-
-if(viewer.availableAnimations){
-log("Animations: " + viewer.availableAnimations.join(", "));
-}
-
+  log("Model loaded");
+  if(viewer.availableAnimations && viewer.availableAnimations.length){
+    log("Animations: " + viewer.availableAnimations.join(", "));
+  }
 });
 
-/* error handler */
-
+// Model errors
 viewer.addEventListener("error", (e) => {
-log("MODEL ERROR");
-console.log(e);
+  log("MODEL ERROR");
+  console.log(e);
 });
 
-/* AR events */
-
-viewer.addEventListener("ar-status", (event) => {
-log("AR STATUS: " + event.detail.status);
-});
-
-viewer.addEventListener("ar-tracking", (event) => {
-log("AR TRACKING: " + event.detail.status);
-});
-
+// AR events
+viewer.addEventListener("ar-status", (event) => log("AR STATUS: " + event.detail.status));
+viewer.addEventListener("ar-tracking", (event) => log("AR TRACKING: " + event.detail.status));
 </script>
 
 </body>
