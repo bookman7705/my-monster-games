@@ -20,18 +20,26 @@ uniform float time;
 varying vec2 vUv;
 
 void main() {
-    // Animate dripping by moving UV downward
-    vec2 dripUv = vUv;
-    dripUv.y -= time * 0.1;
+    // Speed varies by noise + horizontal offset for randomness
+    float speed = 0.1 + texture2D(noiseTexture, vUv * 5.0).r * 0.2;
 
-    // Sample noise to modulate distortion
-    float noiseValue = texture2D(noiseTexture, dripUv * 2.0).r;
+    // Animate vertical UV with wrap-around (mod) for looping drops
+    float offsetY = mod(vUv.y - time * speed + vUv.x * 0.5, 1.0);
+
+    vec2 dripUv = vec2(vUv.x, offsetY);
+
+    // Stretch noise vertically for streak effect
+    vec2 noiseUv = vec2(dripUv.x, dripUv.y * 3.0);
+    float noiseValue = texture2D(noiseTexture, noiseUv).r;
+
+    // Sharpen droplets with threshold
+    float mask = smoothstep(0.6, 0.9, noiseValue);
 
     // Sample normal map and convert to [-1,1]
-    vec3 normal = texture2D(normalMap, dripUv).rgb;
-    normal = normal * 2.0 - 1.0;
+    vec3 normal = texture2D(normalMap, dripUv).rgb * 2.0 - 1.0;
 
-    float distortionStrength = 0.1 * noiseValue;
+    // Distortion only where mask is active
+    float distortionStrength = 0.05 * mask;
 
     // Offset UV for refraction effect
     vec2 offset = normal.xy * distortionStrength;
@@ -39,9 +47,9 @@ void main() {
     // Sample scene texture with distortion
     vec4 sceneColor = texture2D(sceneTexture, vUv + offset);
 
-    // Add subtle highlight
-    float highlight = clamp(normal.z, 0.0, 1.0);
-    sceneColor.rgb += highlight * 0.1;
+    // Add highlight only on droplets
+    float highlight = clamp(normal.z, 0.0, 1.0) * mask;
+    sceneColor.rgb += highlight * 0.2;
 
     gl_FragColor = sceneColor;
 }
@@ -66,12 +74,11 @@ void main() {
   animate();
 
   function init() {
-    // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
 
-    // Main 3D scene with a rotating cube (background)
+    // Background scene: rotating cube
     cubeScene = new THREE.Scene();
     camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
     camera.position.z = 5;
@@ -81,42 +88,40 @@ void main() {
     const cube = new THREE.Mesh(geometry, material);
     cubeScene.add(cube);
 
-    // Render target to render cubeScene offscreen
+    // Offscreen render target for the scene texture
     renderTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
       minFilter: THREE.LinearFilter,
       magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat,
     });
 
-    // Fullscreen quad scene for shader pass
+    // Quad scene to render shader pass fullscreen
     quadScene = new THREE.Scene();
     quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-    // Load textures (replace URLs with your own)
     const loader = new THREE.TextureLoader();
-    const normalMap = loader.load('https://raw.githubusercontent.com/bookman7705/my-monster-games/main/stage/others_0004_normal_opengl_1k.png'); // example water droplet normal map
-    const noiseTexture = loader.load('https://raw.githubusercontent.com/bookman7705/my-monster-games/main/stage/noisy-background.jpg'); // example grayscale noise texture
 
-    // Set texture wrap to repeat for animation
+    const normalMap = loader.load('https://raw.githubusercontent.com/bookman7705/my-monster-games/main/stage/others_0004_normal_opengl_1k.png');
+    const noiseTexture = loader.load('https://raw.githubusercontent.com/bookman7705/my-monster-games/main/stage/noisy-background.jpg');
+
+    // Set wrap mode for animation repeat
     normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
     noiseTexture.wrapS = noiseTexture.wrapT = THREE.RepeatWrapping;
 
-    // Shader uniforms
     uniforms = {
-      sceneTexture: { value: null },   // will set after rendering cubeScene
+      sceneTexture: { value: null },
       normalMap: { value: normalMap },
       noiseTexture: { value: noiseTexture },
-      time: { value: 0 },
+      time: { value: 0 }
     };
 
-    // Shader material for fullscreen quad
     const shaderMaterial = new THREE.ShaderMaterial({
       uniforms: uniforms,
       vertexShader: document.getElementById('vertShader').textContent,
       fragmentShader: document.getElementById('fragShader').textContent,
+      transparent: true,
     });
 
-    // Fullscreen plane geometry and mesh
     const plane = new THREE.PlaneGeometry(2, 2);
     const quad = new THREE.Mesh(plane, shaderMaterial);
     quadScene.add(quad);
@@ -135,20 +140,19 @@ void main() {
   function animate(time = 0) {
     requestAnimationFrame(animate);
 
-    // Rotate cube in main scene
     cubeScene.children[0].rotation.x += 0.01;
     cubeScene.children[0].rotation.y += 0.01;
 
-    // Render main scene to render target texture
+    // Render the background scene into the render target texture
     renderer.setRenderTarget(renderTarget);
     renderer.render(cubeScene, camera);
     renderer.setRenderTarget(null);
 
-    // Update uniform with rendered texture and time
+    // Update uniforms
     uniforms.sceneTexture.value = renderTarget.texture;
     uniforms.time.value = time * 0.001;
 
-    // Render fullscreen quad with water distortion shader
+    // Render fullscreen quad with water droplets effect
     renderer.render(quadScene, quadCamera);
   }
 </script>
