@@ -31,7 +31,7 @@ void main() {
     vec3 normal = texture2D(normalMap, dripUv).rgb;
     normal = normal * 2.0 - 1.0;
 
-    float distortionStrength = 0.03 * noiseValue;
+    float distortionStrength = 0.1 * noiseValue;
 
     // Offset UV for refraction effect
     vec2 offset = normal.xy * distortionStrength;
