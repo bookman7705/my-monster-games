@@ -1,63 +1,157 @@
+<!DOCTYPE html>
 <html lang="en">
-  <head>
-    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
-    <script src="https://raw.githack.com/AR-js-org/AR.js/3.4.5/aframe/build/aframe-ar.js"></script>
+<head>
+<meta charset="UTF-8" />
+<title>Three.js Water Droplets Dripping Effect</title>
+<style>
+  body { margin: 0; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
 
-    <style>
-      /* Style for the version text overlay */
-      .version-overlay {
-        position: fixed;
-        top: 10px;
-        right: 10px;
-        font-size: 20px;
-        color: red;
-        font-family: Arial, sans-serif;
-        background-color: rgba(0, 0, 0, 0.5); /* Optional, adds a slight transparent background */
-        padding: 5px;
-        border-radius: 5px;
-      }
-    </style>
-  </head>
-  <body style="margin: 0; overflow: hidden">
-    <!-- Version overlay text -->
-    <div class="version-overlay">Version 2.0</div>
-  
-    <div class="arjs-loader" id="loader">
-      <div>Loading, please wait...</div>
-    </div>
+<script id="fragShader" type="x-shader/x-fragment">
+uniform sampler2D sceneTexture;
+uniform sampler2D normalMap;
+uniform sampler2D noiseTexture;
+uniform float time;
 
-    <a-scene
-      embedded
-      vr-mode-ui="enabled: false"
-      renderer="logarithmicDepthBuffer: true; precision: medium"
-      arjs="trackingMethod: best; sourceType: webcam; debugUIEnabled: false;"
-    >
-      
-	  
-		 <!-- Ambient Light: Soft overall lighting -->
-		<a-light type="ambient" intensity="1.0" color="#ffffff"></a-light>
+varying vec2 vUv;
 
-	  
-        
-		
-		<a-marker type="https://raw.githubusercontent.com/bookman7705/my-monster-games/refs/heads/main/hiro.patt"
-		  <!-- Earth rotating -->
-		  <a-entity
-			id="earth"
-			gltf-model="https://raw.githubusercontent.com/bookman7705/my-monster-games/master/earth.glb"
-			scale="0.025 0.025 0.025"
-			rotation="0 0 0"
-			animation="property: rotation; to: 0 360 0; loop: true; dur: 10000"
-		  ></a-entity>
+void main() {
+    // Animate dripping by moving UV downward
+    vec2 dripUv = vUv;
+    dripUv.y -= time * 0.1;
 
-		  
-		</a-marker>
-        
-      
-    
-      <a-entity camera></a-entity>
-    </a-scene>
+    // Sample noise to modulate distortion
+    float noiseValue = texture2D(noiseTexture, dripUv * 2.0).r;
 
-    <script src="https://cdn.jsdelivr.net/npm/aframe-extras@6.1.0/dist/aframe-extras.min.js"></script>
-  </body>
+    // Sample normal map and convert to [-1,1]
+    vec3 normal = texture2D(normalMap, dripUv).rgb;
+    normal = normal * 2.0 - 1.0;
+
+    float distortionStrength = 0.03 * noiseValue;
+
+    // Offset UV for refraction effect
+    vec2 offset = normal.xy * distortionStrength;
+
+    // Sample scene texture with distortion
+    vec4 sceneColor = texture2D(sceneTexture, vUv + offset);
+
+    // Add subtle highlight
+    float highlight = clamp(normal.z, 0.0, 1.0);
+    sceneColor.rgb += highlight * 0.1;
+
+    gl_FragColor = sceneColor;
+}
+</script>
+
+<script id="vertShader" type="x-shader/x-vertex">
+varying vec2 vUv;
+
+void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+</script>
+
+<script>
+  let scene, camera, renderer;
+  let cubeScene, cubeCamera, renderTarget;
+  let quadScene, quadCamera;
+  let uniforms;
+
+  init();
+  animate();
+
+  function init() {
+    // Renderer
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Main 3D scene with a rotating cube (background)
+    cubeScene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.z = 5;
+
+    const geometry = new THREE.BoxGeometry();
+    const material = new THREE.MeshNormalMaterial();
+    const cube = new THREE.Mesh(geometry, material);
+    cubeScene.add(cube);
+
+    // Render target to render cubeScene offscreen
+    renderTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+    });
+
+    // Fullscreen quad scene for shader pass
+    quadScene = new THREE.Scene();
+    quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+    // Load textures (replace URLs with your own)
+    const loader = new THREE.TextureLoader();
+    const normalMap = loader.load('https://raw.githubusercontent.com/bookman7705/my-monster-games/main/stage/others_0004_normal_opengl_1k.png'); // example water droplet normal map
+    const noiseTexture = loader.load('https://raw.githubusercontent.com/bookman7705/my-monster-games/main/stage/noisy-background.jpg'); // example grayscale noise texture
+
+    // Set texture wrap to repeat for animation
+    normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
+    noiseTexture.wrapS = noiseTexture.wrapT = THREE.RepeatWrapping;
+
+    // Shader uniforms
+    uniforms = {
+      sceneTexture: { value: null },   // will set after rendering cubeScene
+      normalMap: { value: normalMap },
+      noiseTexture: { value: noiseTexture },
+      time: { value: 0 },
+    };
+
+    // Shader material for fullscreen quad
+    const shaderMaterial = new THREE.ShaderMaterial({
+      uniforms: uniforms,
+      vertexShader: document.getElementById('vertShader').textContent,
+      fragmentShader: document.getElementById('fragShader').textContent,
+    });
+
+    // Fullscreen plane geometry and mesh
+    const plane = new THREE.PlaneGeometry(2, 2);
+    const quad = new THREE.Mesh(plane, shaderMaterial);
+    quadScene.add(quad);
+
+    window.addEventListener('resize', onWindowResize, false);
+
+    function onWindowResize() {
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+
+      renderTarget.setSize(window.innerWidth, window.innerHeight);
+    }
+  }
+
+  function animate(time = 0) {
+    requestAnimationFrame(animate);
+
+    // Rotate cube in main scene
+    cubeScene.children[0].rotation.x += 0.01;
+    cubeScene.children[0].rotation.y += 0.01;
+
+    // Render main scene to render target texture
+    renderer.setRenderTarget(renderTarget);
+    renderer.render(cubeScene, camera);
+    renderer.setRenderTarget(null);
+
+    // Update uniform with rendered texture and time
+    uniforms.sceneTexture.value = renderTarget.texture;
+    uniforms.time.value = time * 0.001;
+
+    // Render fullscreen quad with water distortion shader
+    renderer.render(quadScene, quadCamera);
+  }
+</script>
+
+</body>
 </html>
