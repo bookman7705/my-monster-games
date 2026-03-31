@@ -1,193 +1,234 @@
-// Markerless AR - Android only
+// Markerless AR - stable - works with Androids not Ios
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AR Monster - Android</title>
+<title>Island Viewer AR 3</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  body { margin: 0; overflow: hidden; background: #111; touch-action: none; }
+body { margin: 0; overflow: hidden; background: #111; }
 </style>
 
+<!-- Load model-viewer (for iOS Quick Look) -->
+<script type="module"
+src="https://unpkg.com/@google/model-viewer@latest/dist/model-viewer.min.js">
+</script>
+
+<!-- Import map to resolve the bare "three" specifier used by Three.js examples -->
 <script type="importmap">
 {
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js"
-  }
+"imports": {
+"three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js"
+}
 }
 </script>
-</head>
 
+</head>
 <body>
 
+<!-- iOS AR (Quick Look) -->
+<model-viewer id="island-ar"
+src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb"
+ios-src="https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.usdz"
+ar
+ar-modes="quick-look"
+camera-controls
+auto-rotate
+style="width:100%; height:100%; background:#111; display:none;">
+</model-viewer>
+
+<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
+<script>eruda.init();</script>
+
 <script>
-async function loadThreeAR() {
+/* --------------------------
+PLATFORM DETECTION
+---------------------------*/
+const isIOS =
+/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+(navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-  const THREE = await import('three');
-  const { GLTFLoader } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js');
-  const { ARButton } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/webxr/ARButton.js');
-
-  let scene = new THREE.Scene();
-  let camera = new THREE.PerspectiveCamera();
-  let renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.xr.enabled = true;
-  document.body.appendChild(renderer.domElement);
-
-  /* ---------- LIGHT ---------- */
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1));
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-  dirLight.position.set(5,10,2);
-  scene.add(dirLight);
-
-  /* ---------- MODEL ---------- */
-  let model = null;
-  const loader = new GLTFLoader();
-
-  loader.load(
-    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
-    (gltf) => {
-      model = gltf.scene;
-      model.scale.set(0.1,0.1,0.1);
-      model.visible = false;
-      scene.add(model);
-    }
-  );
-
-  /* ---------- RETICLE ---------- */
-  const reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.25, 0.3, 32).rotateX(-Math.PI/2),
-    new THREE.MeshBasicMaterial({ color: 0x00ff88 })
-  );
-  reticle.matrixAutoUpdate = false;
-  reticle.visible = false;
-  scene.add(reticle);
-
-  /* ---------- STATE ---------- */
-  let placed = false;
-  let hitTestSource = null;
-  let hitTestSourceRequested = false;
-
-  /* ---------- AR BUTTON ---------- */
-  document.body.appendChild(ARButton.createButton(renderer, {
-    requiredFeatures: ['hit-test']
-  }));
-
-  /* ---------- PLACE ON TAP ---------- */
-  const controller = renderer.xr.getController(0);
-  controller.addEventListener('select', () => {
-    if (!placed && reticle.visible && model) {
-      model.visible = true;
-      model.position.setFromMatrixPosition(reticle.matrix);
-      model.quaternion.setFromRotationMatrix(reticle.matrix);
-
-      placed = true;
-      reticle.visible = false; // ✅ remove targeting circle
-    }
-  });
-  scene.add(controller);
-
-  /* =====================================================
-     GESTURES
-  ===================================================== */
-  let isDragging = false;
-  let lastTouch = null;
-  let initialDistance = 0;
-  let initialScale = 1;
-
-  renderer.domElement.addEventListener('touchstart', (e) => {
-    if (!placed || !model) return;
-
-    if (e.touches.length === 1) {
-      isDragging = true;
-      lastTouch = e.touches[0];
-    }
-
-    if (e.touches.length === 2) {
-      isDragging = false;
-
-      const dx = e.touches[0].pageX - e.touches[1].pageX;
-      const dy = e.touches[0].pageY - e.touches[1].pageY;
-      initialDistance = Math.sqrt(dx*dx + dy*dy);
-      initialScale = model.scale.x;
-    }
-  });
-
-  renderer.domElement.addEventListener('touchmove', (e) => {
-    if (!placed || !model) return;
-
-    /* ---- DRAG (move on plane) ---- */
-    if (e.touches.length === 1 && isDragging) {
-      // we update position using hit test in render loop
-      lastTouch = e.touches[0];
-    }
-
-    /* ---- PINCH SCALE + ROTATE ---- */
-    if (e.touches.length === 2) {
-
-      const dx = e.touches[0].pageX - e.touches[1].pageX;
-      const dy = e.touches[0].pageY - e.touches[1].pageY;
-      const dist = Math.sqrt(dx*dx + dy*dy);
-
-      // SCALE
-      let scale = initialScale * (dist / initialDistance);
-      scale = Math.max(0.05, Math.min(2, scale));
-      model.scale.set(scale, scale, scale);
-
-      // ROTATE
-      const angle = Math.atan2(dy, dx);
-      model.rotation.y = -angle;
-    }
-  });
-
-  renderer.domElement.addEventListener('touchend', () => {
-    isDragging = false;
-  });
-
-  /* ---------- RENDER LOOP ---------- */
-  renderer.setAnimationLoop((timestamp, frame) => {
-
-    if (frame) {
-      const refSpace = renderer.xr.getReferenceSpace();
-      const session = renderer.xr.getSession();
-
-      if (!hitTestSourceRequested) {
-        session.requestReferenceSpace('viewer').then((viewerSpace) => {
-          session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-            hitTestSource = source;
-          });
-        });
-        hitTestSourceRequested = true;
-      }
-
-      if (hitTestSource) {
-        const hits = frame.getHitTestResults(hitTestSource);
-
-        if (hits.length > 0) {
-          const pose = hits[0].getPose(refSpace);
-
-          if (!placed) {
-            reticle.visible = true;
-            reticle.matrix.fromArray(pose.transform.matrix);
-          }
-
-          // ✅ DRAGGING updates position using plane
-          if (placed && isDragging && model) {
-            model.position.setFromMatrixPosition(
-              new THREE.Matrix4().fromArray(pose.transform.matrix)
-            );
-          }
-        }
-      }
-    }
-
-    renderer.render(scene, camera);
-  });
-
+if (isIOS) {
+// Show model-viewer for iOS
+document.getElementById('island-ar').style.display = 'block';
+} else {
+// Load Three.js AR dynamically for Android/Desktop
+loadThreeAR();
 }
 
-loadThreeAR();
+/* --------------------------
+ANDROID / WEBXR AR
+---------------------------*/
+async function loadThreeAR() {
+
+const THREE = await import('three');
+const { GLTFLoader } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js');
+const { ARButton } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/webxr/ARButton.js');
+
+let scene, camera, renderer;
+let reticle;
+let hitTestSource = null;
+let hitTestSourceRequested = false;
+let model = null;
+let mixer = null;
+const clock = new THREE.Clock();
+let mainAction = null;
+const ROAR_TIME = 14.5;
+let roarPlayedThisLoop = false;
+let prevActionTime = 0;
+const roarSound = new Audio('roar1.mp3');
+
+/* ---------- INIT ---------- */
+scene = new THREE.Scene();
+
+camera = new THREE.PerspectiveCamera(
+60,
+window.innerWidth / window.innerHeight,
+0.1,
+100
+);
+
+renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+// Lighting
+const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1);
+scene.add(hemiLight);
+
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(5, 10, 2);
+scene.add(dirLight);
+
+// Load GLB
+const loader = new GLTFLoader();
+loader.load(
+'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
+(gltf) => {
+model = gltf.scene;
+
+// Adjust scale if needed
+model.scale.set(0.1, 0.1, 0.1);
+
+model.visible = false;
+scene.add(model);
+
+if (gltf.animations.length > 0) {
+mixer = new THREE.AnimationMixer(model);
+gltf.animations.forEach((clip, index) => {
+const action = mixer.clipAction(clip);
+if (index === 0) {
+mainAction = action;
+}
+action.play();
+});
+}
+},
+undefined,
+(error) => console.error('Error loading model:', error)
+);
+
+// Reticle
+const geometry = new THREE.RingGeometry(0.25, 0.3, 32);
+geometry.rotateX(-Math.PI / 2);
+const material = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+reticle = new THREE.Mesh(geometry, material);
+reticle.matrixAutoUpdate = false;
+reticle.visible = false;
+scene.add(reticle);
+
+// AR Button
+document.body.appendChild(ARButton.createButton(renderer, {
+requiredFeatures: ['hit-test', 'local-floor']
+}));
+
+// Tap placement
+const controller = renderer.xr.getController(0);
+controller.addEventListener('select', () => {
+if (reticle.visible && model) {
+model.visible = true;
+model.position.setFromMatrixPosition(reticle.matrix);
+model.quaternion.setFromRotationMatrix(reticle.matrix);
+}
+});
+scene.add(controller);
+
+window.addEventListener('resize', () => {
+camera.aspect = window.innerWidth / window.innerHeight;
+camera.updateProjectionMatrix();
+renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop((timestamp, frame) => {
+
+const delta = clock.getDelta();
+if (mixer) {
+mixer.update(delta);
+
+if (mainAction) {
+const duration = mainAction.getClip().duration || 0;
+if (duration > 0) {
+const localTime = mainAction.time % duration;
+
+if (!roarPlayedThisLoop && localTime >= ROAR_TIME) {
+try {
+roarSound.currentTime = 0;
+roarSound.play();
+} catch (e) {
+// Ignore autoplay or play errors
+}
+roarPlayedThisLoop = true;
+}
+
+if (localTime < prevActionTime) {
+roarPlayedThisLoop = false;
+}
+
+prevActionTime = localTime;
+}
+}
+}
+
+if (frame) {
+const referenceSpace = renderer.xr.getReferenceSpace();
+const session = renderer.xr.getSession();
+
+if (!hitTestSourceRequested) {
+session.requestReferenceSpace('viewer').then((viewerSpace) => {
+session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+hitTestSource = source;
+});
+});
+
+session.addEventListener('end', () => {
+hitTestSourceRequested = false;
+hitTestSource = null;
+});
+
+hitTestSourceRequested = true;
+}
+
+if (hitTestSource) {
+const hitTestResults = frame.getHitTestResults(hitTestSource);
+
+if (hitTestResults.length > 0) {
+const hit = hitTestResults[0];
+const pose = hit.getPose(referenceSpace);
+
+reticle.visible = true;
+reticle.matrix.fromArray(pose.transform.matrix);
+} else {
+reticle.visible = false;
+}
+}
+}
+
+renderer.render(scene, camera);
+});
+
+}
 </script>
 
 </body>
