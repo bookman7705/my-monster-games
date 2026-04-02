@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AR Monster - Fixed</title>
+<title>AR Monster - Gesture Locked</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   body { margin: 0; overflow: hidden; background: #111; touch-action: none; }
@@ -40,7 +40,7 @@ async function loadThreeAR() {
   dirLight.position.set(5,10,2);
   scene.add(dirLight);
 
-  /* ---------- MODEL + ANIMATION ---------- */
+  /* ---------- MODEL ---------- */
   let model = null;
   let mixer = null;
   const clock = new THREE.Clock();
@@ -57,8 +57,7 @@ async function loadThreeAR() {
 
       if (gltf.animations.length > 0) {
         mixer = new THREE.AnimationMixer(model);
-        const action = mixer.clipAction(gltf.animations[0]);
-        action.play();
+        mixer.clipAction(gltf.animations[0]).play();
       }
     }
   );
@@ -86,7 +85,9 @@ async function loadThreeAR() {
   const tmpScale = new THREE.Vector3();
   const tmpNormal = new THREE.Vector3();
 
+  /* ---------- GESTURE STATE ---------- */
   const gestureState = {
+    type: null, // 'move' | 'scale' | 'rotate'
     isDragging: false,
     lastAngle: 0,
     lastDistance: 0
@@ -129,31 +130,38 @@ async function loadThreeAR() {
   function applyHorizontalPlacement(matrix) {
     matrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
     model.position.copy(tmpPosition);
-    // Keep model upright and preserve user yaw gestures.
     model.rotation.x = 0;
     model.rotation.z = 0;
   }
 
+  /* ---------- TOUCH START ---------- */
   function onTouchStart(e) {
     if (!placed || !model) return;
     e.preventDefault();
 
     if (e.touches.length === 1) {
+      gestureState.type = "move";
       gestureState.isDragging = true;
       return;
     }
 
     if (e.touches.length === 2) {
-      gestureState.isDragging = false;
       const metrics = getTwoTouchMetrics(e.touches);
       gestureState.lastDistance = metrics.distance;
       gestureState.lastAngle = metrics.angle;
+      gestureState.type = null;
+      gestureState.isDragging = false;
     }
   }
 
+  /* ---------- TOUCH MOVE ---------- */
   function onTouchMove(e) {
     if (!placed || !model) return;
     e.preventDefault();
+
+    if (e.touches.length === 1 && gestureState.type === "move") {
+      return;
+    }
 
     if (e.touches.length !== 2) return;
 
@@ -161,26 +169,48 @@ async function loadThreeAR() {
     const dist = metrics.distance;
     const angle = metrics.angle;
 
-    if (gestureState.lastDistance > 0) {
+    const distDelta = Math.abs(dist - gestureState.lastDistance);
+    const angleDelta = Math.abs(angle - gestureState.lastAngle);
+
+    /* Decide gesture */
+    if (!gestureState.type) {
+      const SCALE_THRESHOLD = 5;
+      const ROTATE_THRESHOLD = 0.05;
+
+      if (distDelta > SCALE_THRESHOLD && distDelta > angleDelta * 100) {
+        gestureState.type = "scale";
+      } else if (angleDelta > ROTATE_THRESHOLD) {
+        gestureState.type = "rotate";
+      } else {
+        return;
+      }
+    }
+
+    /* Apply locked gesture */
+
+    if (gestureState.type === "scale") {
       let scaleFactor = dist / gestureState.lastDistance;
       let newScale = model.scale.x * scaleFactor;
       newScale = Math.max(0.05, Math.min(2, newScale));
       model.scale.set(newScale, newScale, newScale);
     }
 
-    const deltaAngle = angle - gestureState.lastAngle;
-    model.rotation.y += deltaAngle;
+    if (gestureState.type === "rotate") {
+      const deltaAngle = angle - gestureState.lastAngle;
+      model.rotation.y -= deltaAngle; // 🔁 REVERSED ROTATION
+    }
 
     gestureState.lastDistance = dist;
     gestureState.lastAngle = angle;
   }
 
+  /* ---------- TOUCH END ---------- */
   function onTouchEnd() {
     gestureState.isDragging = false;
     gestureState.lastDistance = 0;
+    gestureState.type = null;
   }
 
-  // Listen on window so gestures still work across AR/browser implementations.
   window.addEventListener('touchstart', onTouchStart, { passive: false });
   window.addEventListener('touchmove', onTouchMove, { passive: false });
   window.addEventListener('touchend', onTouchEnd);
@@ -206,7 +236,6 @@ async function loadThreeAR() {
             hitTestSource = source;
           });
 
-          // Finger ray hit-test source, required for touch-drag in AR.
           session.requestHitTestSourceForTransientInput({
             profile: 'generic-touchscreen',
             entityTypes: ['plane']
@@ -228,6 +257,7 @@ async function loadThreeAR() {
 
         if (hits.length > 0) {
           let horizontalPose = null;
+
           for (const hit of hits) {
             const pose = hit.getPose(refSpace);
             if (!pose) continue;
@@ -245,7 +275,9 @@ async function loadThreeAR() {
             reticle.visible = false;
           }
 
-          if (placed && gestureState.isDragging && model) {
+          /* ---------- MOVE ---------- */
+          if (placed && gestureState.isDragging && gestureState.type === "move" && model) {
+
             let dragPose = null;
 
             if (transientHitTestSource) {
@@ -264,7 +296,6 @@ async function loadThreeAR() {
               }
             }
 
-            // Fallback for runtimes that do not expose transient touch hits.
             if (!dragPose && horizontalPose) dragPose = horizontalPose;
 
             if (dragPose) {
