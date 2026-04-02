@@ -75,6 +75,7 @@ async function loadThreeAR() {
   /* ---------- STATE ---------- */
   let placed = false;
   let hitTestSource = null;
+  let transientHitTestSource = null;
   let viewerSpace = null;
   let refSpace = null;
 
@@ -179,10 +180,11 @@ async function loadThreeAR() {
     gestureState.lastDistance = 0;
   }
 
-  renderer.domElement.addEventListener('touchstart', onTouchStart, { passive: false });
-  renderer.domElement.addEventListener('touchmove', onTouchMove, { passive: false });
-  renderer.domElement.addEventListener('touchend', onTouchEnd);
-  renderer.domElement.addEventListener('touchcancel', onTouchEnd);
+  // Listen on window so gestures still work across AR/browser implementations.
+  window.addEventListener('touchstart', onTouchStart, { passive: false });
+  window.addEventListener('touchmove', onTouchMove, { passive: false });
+  window.addEventListener('touchend', onTouchEnd);
+  window.addEventListener('touchcancel', onTouchEnd);
 
   /* ---------- RENDER LOOP ---------- */
   renderer.setAnimationLoop((timestamp, frame) => {
@@ -202,6 +204,16 @@ async function loadThreeAR() {
             entityTypes: ['plane']
           }).then((source) => {
             hitTestSource = source;
+          });
+
+          // Finger ray hit-test source, required for touch-drag in AR.
+          session.requestHitTestSourceForTransientInput({
+            profile: 'generic-touchscreen',
+            entityTypes: ['plane']
+          }).then((source) => {
+            transientHitTestSource = source;
+          }).catch(() => {
+            transientHitTestSource = null;
           });
         });
 
@@ -233,9 +245,32 @@ async function loadThreeAR() {
             reticle.visible = false;
           }
 
-          if (placed && gestureState.isDragging && model && horizontalPose) {
-            tmpMatrix.fromArray(horizontalPose.transform.matrix);
-            applyHorizontalPlacement(tmpMatrix);
+          if (placed && gestureState.isDragging && model) {
+            let dragPose = null;
+
+            if (transientHitTestSource) {
+              const transientResults = frame.getHitTestResultsForTransientInput(transientHitTestSource);
+              for (const result of transientResults) {
+                for (const hit of result.results) {
+                  const pose = hit.getPose(refSpace);
+                  if (!pose) continue;
+                  tmpMatrix.fromArray(pose.transform.matrix);
+                  if (isHorizontalPose(tmpMatrix)) {
+                    dragPose = pose;
+                    break;
+                  }
+                }
+                if (dragPose) break;
+              }
+            }
+
+            // Fallback for runtimes that do not expose transient touch hits.
+            if (!dragPose && horizontalPose) dragPose = horizontalPose;
+
+            if (dragPose) {
+              tmpMatrix.fromArray(dragPose.transform.matrix);
+              applyHorizontalPlacement(tmpMatrix);
+            }
           }
         }
       }
