@@ -78,10 +78,18 @@ async function loadThreeAR() {
   let viewerSpace = null;
   let refSpace = null;
 
-  let isDragging = false;
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  const tmpMatrix = new THREE.Matrix4();
+  const tmpPosition = new THREE.Vector3();
+  const tmpQuaternion = new THREE.Quaternion();
+  const tmpScale = new THREE.Vector3();
+  const tmpNormal = new THREE.Vector3();
 
-  let lastAngle = 0;
-  let lastDistance = 0;
+  const gestureState = {
+    isDragging: false,
+    lastAngle: 0,
+    lastDistance: 0
+  };
 
   /* ---------- AR BUTTON ---------- */
   document.body.appendChild(ARButton.createButton(renderer, {
@@ -94,8 +102,7 @@ async function loadThreeAR() {
     if (!placed && reticle.visible && model) {
 
       model.visible = true;
-      model.position.setFromMatrixPosition(reticle.matrix);
-      model.quaternion.setFromRotationMatrix(reticle.matrix);
+      applyHorizontalPlacement(reticle.matrix);
 
       placed = true;
       reticle.visible = false;
@@ -103,58 +110,79 @@ async function loadThreeAR() {
   });
   scene.add(controller);
 
-  /* =====================================================
-     TOUCH GESTURES (FIXED)
-  ===================================================== */
+  function getTwoTouchMetrics(touches) {
+    const dx = touches[0].pageX - touches[1].pageX;
+    const dy = touches[0].pageY - touches[1].pageY;
+    return {
+      distance: Math.sqrt(dx * dx + dy * dy),
+      angle: Math.atan2(dy, dx)
+    };
+  }
 
-  renderer.domElement.addEventListener('touchstart', (e) => {
+  function isHorizontalPose(matrix) {
+    matrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
+    tmpNormal.set(0, 1, 0).applyQuaternion(tmpQuaternion).normalize();
+    return Math.abs(tmpNormal.dot(worldUp)) > 0.8;
+  }
+
+  function applyHorizontalPlacement(matrix) {
+    matrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
+    model.position.copy(tmpPosition);
+    // Keep model upright and preserve user yaw gestures.
+    model.rotation.x = 0;
+    model.rotation.z = 0;
+  }
+
+  function onTouchStart(e) {
     if (!placed || !model) return;
+    e.preventDefault();
 
     if (e.touches.length === 1) {
-      isDragging = true;
+      gestureState.isDragging = true;
+      return;
     }
 
     if (e.touches.length === 2) {
-      isDragging = false;
-
-      const dx = e.touches[0].pageX - e.touches[1].pageX;
-      const dy = e.touches[0].pageY - e.touches[1].pageY;
-
-      lastDistance = Math.sqrt(dx*dx + dy*dy);
-      lastAngle = Math.atan2(dy, dx);
+      gestureState.isDragging = false;
+      const metrics = getTwoTouchMetrics(e.touches);
+      gestureState.lastDistance = metrics.distance;
+      gestureState.lastAngle = metrics.angle;
     }
-  });
+  }
 
-  renderer.domElement.addEventListener('touchmove', (e) => {
+  function onTouchMove(e) {
     if (!placed || !model) return;
+    e.preventDefault();
 
-    /* ---- PINCH + ROTATE ---- */
-    if (e.touches.length === 2) {
+    if (e.touches.length !== 2) return;
 
-      const dx = e.touches[0].pageX - e.touches[1].pageX;
-      const dy = e.touches[0].pageY - e.touches[1].pageY;
+    const metrics = getTwoTouchMetrics(e.touches);
+    const dist = metrics.distance;
+    const angle = metrics.angle;
 
-      const dist = Math.sqrt(dx*dx + dy*dy);
-      const angle = Math.atan2(dy, dx);
-
-      // SCALE
-      let scaleFactor = dist / lastDistance;
+    if (gestureState.lastDistance > 0) {
+      let scaleFactor = dist / gestureState.lastDistance;
       let newScale = model.scale.x * scaleFactor;
       newScale = Math.max(0.05, Math.min(2, newScale));
       model.scale.set(newScale, newScale, newScale);
-
-      // ROTATE (Y axis only)
-      let deltaAngle = angle - lastAngle;
-      model.rotation.y += deltaAngle;
-
-      lastDistance = dist;
-      lastAngle = angle;
     }
-  });
 
-  renderer.domElement.addEventListener('touchend', () => {
-    isDragging = false;
-  });
+    const deltaAngle = angle - gestureState.lastAngle;
+    model.rotation.y += deltaAngle;
+
+    gestureState.lastDistance = dist;
+    gestureState.lastAngle = angle;
+  }
+
+  function onTouchEnd() {
+    gestureState.isDragging = false;
+    gestureState.lastDistance = 0;
+  }
+
+  renderer.domElement.addEventListener('touchstart', onTouchStart, { passive: false });
+  renderer.domElement.addEventListener('touchmove', onTouchMove, { passive: false });
+  renderer.domElement.addEventListener('touchend', onTouchEnd);
+  renderer.domElement.addEventListener('touchcancel', onTouchEnd);
 
   /* ---------- RENDER LOOP ---------- */
   renderer.setAnimationLoop((timestamp, frame) => {
@@ -169,7 +197,10 @@ async function loadThreeAR() {
       if (!viewerSpace) {
         session.requestReferenceSpace('viewer').then((space) => {
           viewerSpace = space;
-          session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+          session.requestHitTestSource({
+            space: viewerSpace,
+            entityTypes: ['plane']
+          }).then((source) => {
             hitTestSource = source;
           });
         });
@@ -184,17 +215,27 @@ async function loadThreeAR() {
         const hits = frame.getHitTestResults(hitTestSource);
 
         if (hits.length > 0) {
-          const pose = hits[0].getPose(refSpace);
-
-          if (!placed) {
-            reticle.visible = true;
-            reticle.matrix.fromArray(pose.transform.matrix);
+          let horizontalPose = null;
+          for (const hit of hits) {
+            const pose = hit.getPose(refSpace);
+            if (!pose) continue;
+            tmpMatrix.fromArray(pose.transform.matrix);
+            if (isHorizontalPose(tmpMatrix)) {
+              horizontalPose = pose;
+              break;
+            }
           }
 
-          // ✅ DRAG FIX: actually moves model using real hit pose
-          if (placed && isDragging && model) {
-            const mat = new THREE.Matrix4().fromArray(pose.transform.matrix);
-            model.position.setFromMatrixPosition(mat);
+          if (horizontalPose && !placed) {
+            reticle.visible = true;
+            reticle.matrix.fromArray(horizontalPose.transform.matrix);
+          } else if (!placed) {
+            reticle.visible = false;
+          }
+
+          if (placed && gestureState.isDragging && model && horizontalPose) {
+            tmpMatrix.fromArray(horizontalPose.transform.matrix);
+            applyHorizontalPlacement(tmpMatrix);
           }
         }
       }
