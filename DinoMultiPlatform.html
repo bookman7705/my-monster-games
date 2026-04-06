@@ -5,14 +5,14 @@
 <title>AR Monster - Gesture Locked</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
-  body { margin: 0; overflow: hidden; background: #111; touch-action: none; }
+body { margin: 0; overflow: hidden; background: #111; touch-action: none; }
 </style>
 
 <script type="importmap">
 {
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js"
-  }
+"imports": {
+"three": "https://cdn.jsdelivr.net/npm/three@0.160/build/three.module.js"
+}
 }
 </script>
 </head>
@@ -22,340 +22,293 @@
 <script>
 async function loadThreeAR() {
 
-  const THREE = await import('three');
-  const { GLTFLoader } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js');
-  const { ARButton } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/webxr/ARButton.js');
-
-  let scene = new THREE.Scene();
-  let camera = new THREE.PerspectiveCamera();
-  let renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.xr.enabled = true;
-  document.body.appendChild(renderer.domElement);
-
-  /* ---------- RAYCAST ---------- */
-  const raycaster = new THREE.Raycaster();
-  const touchPoint = new THREE.Vector2();
-  let gestureEnabled = false;
-
-  /* ---------- LIGHT ---------- */
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1));
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-  dirLight.position.set(5,10,2);
-  scene.add(dirLight);
-
-  /* ---------- MODEL ---------- */
-  let model = null;
-  let mixer = null;
-  const clock = new THREE.Clock();
-
-  const loader = new GLTFLoader();
-  loader.load(
-    'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
-    (gltf) => {
-
-      model = gltf.scene;
-      model.scale.set(0.1,0.1,0.1);
-      model.visible = false;
-
-      // ✅ HITBOX (centered + padded)
-      const box = new THREE.Box3().setFromObject(model);
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-
-      const padding = 1.2;
-
-      const hitbox = new THREE.Mesh(
-        new THREE.BoxGeometry(
-          size.x * padding,
-          size.y * padding,
-          size.z * padding
-        ),
-        new THREE.MeshBasicMaterial({ visible: false })
-      );
-
-      hitbox.position.copy(center);
-      model.add(hitbox);
-
-      scene.add(model);
-
-      if (gltf.animations.length > 0) {
-        mixer = new THREE.AnimationMixer(model);
-        mixer.clipAction(gltf.animations[0]).play();
-      }
-    }
-  );
-
-  /* ---------- RETICLE ---------- */
-  const reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.25, 0.3, 32).rotateX(-Math.PI/2),
-    new THREE.MeshBasicMaterial({ color: 0x00ff88 })
-  );
-  reticle.matrixAutoUpdate = false;
-  reticle.visible = false;
-  scene.add(reticle);
-
-  /* ---------- STATE ---------- */
-  let placed = false;
-  let hitTestSource = null;
-  let transientHitTestSource = null;
-  let viewerSpace = null;
-  let refSpace = null;
-
-  const worldUp = new THREE.Vector3(0, 1, 0);
-  const tmpMatrix = new THREE.Matrix4();
-  const tmpPosition = new THREE.Vector3();
-  const tmpQuaternion = new THREE.Quaternion();
-  const tmpScale = new THREE.Vector3();
-  const tmpNormal = new THREE.Vector3();
-
-  /* ---------- GESTURES ---------- */
-  const gestureState = {
-    type: null,
-    isDragging: false,
-    lastAngle: 0,
-    lastDistance: 0
-  };
-
-  /* ---------- AR BUTTON ---------- */
-  document.body.appendChild(ARButton.createButton(renderer, {
-    requiredFeatures: ['hit-test']
-  }));
-
-  /* ---------- PLACE ---------- */
-  const controller = renderer.xr.getController(0);
-  controller.addEventListener('select', () => {
-    if (!placed && reticle.visible && model) {
-      model.visible = true;
-      applyHorizontalPlacement(reticle.matrix);
-      placed = true;
-      reticle.visible = false;
-    }
-  });
-  scene.add(controller);
-
-  /* ---------- HELPERS ---------- */
-
-  function getTwoTouchMetrics(touches) {
-    const dx = touches[0].pageX - touches[1].pageX;
-    const dy = touches[0].pageY - touches[1].pageY;
-    return {
-      distance: Math.sqrt(dx * dx + dy * dy),
-      angle: Math.atan2(dy, dx)
-    };
-  }
-
-  function isHorizontalPose(matrix) {
-    matrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
-    tmpNormal.set(0,1,0).applyQuaternion(tmpQuaternion).normalize();
-    return Math.abs(tmpNormal.dot(worldUp)) > 0.8;
-  }
-
-  function applyHorizontalPlacement(matrix) {
-    matrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
-    model.position.copy(tmpPosition);
-    model.rotation.x = 0;
-    model.rotation.z = 0;
-  }
-
-  function isTouchOnModel(touch) {
-    if (!model) return false;
-
-    touchPoint.x = (touch.pageX / window.innerWidth) * 2 - 1;
-    touchPoint.y = -(touch.pageY / window.innerHeight) * 2 + 1;
-
-    // ✅ XR camera fix
-    raycaster.setFromCamera(touchPoint, renderer.xr.getCamera(camera));
-
-    const intersects = raycaster.intersectObject(model, true);
-    return intersects.length > 0;
-  }
-
-  /* ---------- TOUCH ---------- */
-
-  function onTouchStart(e) {
-    if (!placed || !model) return;
-    e.preventDefault();
-  
-    // ✅ DO NOT reset immediately
-    if (gestureEnabled) return;
-  
-    if (e.touches.length === 1) {
-      if (!isTouchOnModel(e.touches[0])) return;
-  
-      gestureEnabled = true;
-      gestureState.type = "move";
-      gestureState.isDragging = true;
-      return;
-    }
-  
-    if (e.touches.length === 2) {
-      if (!isTouchOnModel(e.touches[0]) && !isTouchOnModel(e.touches[1])) return;
-  
-      gestureEnabled = true;
-  
-      const m = getTwoTouchMetrics(e.touches);
-      gestureState.lastDistance = m.distance;
-      gestureState.lastAngle = m.angle;
-      gestureState.type = null;
-      gestureState.isDragging = false;
-    }
-  }
-
-  function onTouchMove(e) {
-    if (!gestureEnabled || !placed || !model) return;
-    e.preventDefault();
-
-    if (e.touches.length === 1 && gestureState.type === "move") return;
-    if (e.touches.length !== 2) return;
-
-    const m = getTwoTouchMetrics(e.touches);
-
-    const distDelta = Math.abs(m.distance - gestureState.lastDistance);
-    const angleDelta = Math.abs(m.angle - gestureState.lastAngle);
-
-    if (!gestureState.type) {
-      if (distDelta > 5 && distDelta > angleDelta * 100) {
-        gestureState.type = "scale";
-      } else if (angleDelta > 0.05) {
-        gestureState.type = "rotate";
-      } else return;
-    }
-
-    if (gestureState.type === "scale") {
-      let scale = model.scale.x * (m.distance / gestureState.lastDistance);
-      scale = Math.max(0.05, Math.min(2, scale));
-      model.scale.setScalar(scale);
-    }
-
-    if (gestureState.type === "rotate") {
-      model.rotation.y -= (m.angle - gestureState.lastAngle);
-    }
-
-    gestureState.lastDistance = m.distance;
-    gestureState.lastAngle = m.angle;
-  }
-
-  function onTouchEnd() {
-    gestureEnabled = false;
-    gestureState.isDragging = false;
-    gestureState.type = null;
-  }
-
-  window.addEventListener('touchstart', onTouchStart, { passive: false });
-  window.addEventListener('touchmove', onTouchMove, { passive: false });
-  window.addEventListener('touchend', onTouchEnd);
-  window.addEventListener('touchcancel', onTouchEnd);
-
-  /* ---------- LOOP ---------- */
-
-  renderer.setAnimationLoop((t, frame) => {
-
-    if (mixer) mixer.update(clock.getDelta());
-
-    if (frame) {
-      const session = renderer.xr.getSession();
-
-      if (!viewerSpace) {
-        session.requestReferenceSpace('viewer').then(s => {
-          viewerSpace = s;
-
-          session.requestHitTestSource({
-            space: viewerSpace,
-            entityTypes: ['plane']
-          }).then(src => hitTestSource = src);
-
-          session.requestHitTestSourceForTransientInput({
-            profile: 'generic-touchscreen',
-            entityTypes: ['plane']
-          }).then(src => transientHitTestSource = src)
-          .catch(() => transientHitTestSource = null);
-        });
-
-        session.requestReferenceSpace('local').then(s => refSpace = s);
-      }
-
-      if (hitTestSource && refSpace) {
-
-        const hits = frame.getHitTestResults(hitTestSource);
-
-        let horizontalPose = null;
-
-        for (const hit of hits) {
-          const pose = hit.getPose(refSpace);
-          if (!pose) continue;
-
-          tmpMatrix.fromArray(pose.transform.matrix);
-
-          if (isHorizontalPose(tmpMatrix)) {
-            horizontalPose = pose;
-            break;
-          }
-        }
-
-        if (horizontalPose && !placed) {
-          reticle.visible = true;
-          reticle.matrix.fromArray(horizontalPose.transform.matrix);
-        } else if (!placed) {
-          reticle.visible = false;
-        }
-
-        /* ---------- DRAG ---------- */
-        if (placed && gestureState.isDragging && gestureState.type === "move") {
-
-          let dragPose = null;
-
-          if (transientHitTestSource) {
-            const results = frame.getHitTestResultsForTransientInput(transientHitTestSource);
-
-            for (const r of results) {
-              for (const hit of r.results) {
-                const pose = hit.getPose(refSpace);
-                if (!pose) continue;
-
-                tmpMatrix.fromArray(pose.transform.matrix);
-
-                if (isHorizontalPose(tmpMatrix)) {
-                  dragPose = pose;
-                  break;
-                }
-              }
-              if (dragPose) break;
-            }
-          }
-
-          // ✅ Primary movement
-          if (dragPose) {
-            tmpMatrix.fromArray(dragPose.transform.matrix);
-
-            if (isHorizontalPose(tmpMatrix)) {
-              tmpMatrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
-
-              model.position.lerp(tmpPosition, 0.25);
-              model.rotation.x = 0;
-              model.rotation.z = 0;
-            }
-          }
-
-          // ✅ Fallback
-          else if (horizontalPose) {
-            tmpMatrix.fromArray(horizontalPose.transform.matrix);
-
-            if (isHorizontalPose(tmpMatrix)) {
-              tmpMatrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
-
-              model.position.lerp(tmpPosition, 0.25);
-              model.rotation.x = 0;
-              model.rotation.z = 0;
-            }
-          }
-        }
-      }
-    }
-
-    renderer.render(scene, camera);
-  });
+const THREE = await import('three');
+const { GLTFLoader } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/loaders/GLTFLoader.js');
+const { ARButton } = await import('https://cdn.jsdelivr.net/npm/three@0.160/examples/jsm/webxr/ARButton.js');
+
+let scene = new THREE.Scene();
+let camera = new THREE.PerspectiveCamera();
+let renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+/* ---------- LIGHT ---------- */
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(5,10,2);
+scene.add(dirLight);
+
+/* ---------- MODEL ---------- */
+let model = null;
+let mixer = null;
+const clock = new THREE.Clock();
+
+const loader = new GLTFLoader();
+loader.load(
+'https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb',
+(gltf) => {
+
+model = gltf.scene;
+model.scale.set(0.1,0.1,0.1);
+model.visible = false;
+scene.add(model);
+
+if (gltf.animations.length > 0) {
+mixer = new THREE.AnimationMixer(model);
+mixer.clipAction(gltf.animations[0]).play();
+}
+}
+);
+
+/* ---------- RETICLE ---------- */
+const reticle = new THREE.Mesh(
+new THREE.RingGeometry(0.25, 0.3, 32).rotateX(-Math.PI/2),
+new THREE.MeshBasicMaterial({ color: 0x00ff88 })
+);
+reticle.matrixAutoUpdate = false;
+reticle.visible = false;
+scene.add(reticle);
+
+/* ---------- STATE ---------- */
+let placed = false;
+let hitTestSource = null;
+let transientHitTestSource = null;
+let viewerSpace = null;
+let refSpace = null;
+
+const worldUp = new THREE.Vector3(0, 1, 0);
+const tmpMatrix = new THREE.Matrix4();
+const tmpPosition = new THREE.Vector3();
+const tmpQuaternion = new THREE.Quaternion();
+const tmpScale = new THREE.Vector3();
+const tmpNormal = new THREE.Vector3();
+
+/* ---------- GESTURE STATE ---------- */
+const gestureState = {
+type: null, // 'move' | 'scale' | 'rotate'
+isDragging: false,
+lastAngle: 0,
+lastDistance: 0
+};
+
+/* ---------- AR BUTTON ---------- */
+document.body.appendChild(ARButton.createButton(renderer, {
+requiredFeatures: ['hit-test']
+}));
+
+/* ---------- PLACE ---------- */
+const controller = renderer.xr.getController(0);
+controller.addEventListener('select', () => {
+if (!placed && reticle.visible && model) {
+
+model.visible = true;
+applyHorizontalPlacement(reticle.matrix);
+
+placed = true;
+reticle.visible = false;
+}
+});
+scene.add(controller);
+
+function getTwoTouchMetrics(touches) {
+const dx = touches[0].pageX - touches[1].pageX;
+const dy = touches[0].pageY - touches[1].pageY;
+return {
+distance: Math.sqrt(dx * dx + dy * dy),
+angle: Math.atan2(dy, dx)
+};
+}
+
+function isHorizontalPose(matrix) {
+matrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
+tmpNormal.set(0, 1, 0).applyQuaternion(tmpQuaternion).normalize();
+return Math.abs(tmpNormal.dot(worldUp)) > 0.8;
+}
+
+function applyHorizontalPlacement(matrix) {
+matrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
+model.position.copy(tmpPosition);
+model.rotation.x = 0;
+model.rotation.z = 0;
+}
+
+/* ---------- TOUCH START ---------- */
+function onTouchStart(e) {
+if (!placed || !model) return;
+e.preventDefault();
+
+if (e.touches.length === 1) {
+gestureState.type = "move";
+gestureState.isDragging = true;
+return;
+}
+
+if (e.touches.length === 2) {
+const metrics = getTwoTouchMetrics(e.touches);
+gestureState.lastDistance = metrics.distance;
+gestureState.lastAngle = metrics.angle;
+gestureState.type = null;
+gestureState.isDragging = false;
+}
+}
+
+/* ---------- TOUCH MOVE ---------- */
+function onTouchMove(e) {
+if (!placed || !model) return;
+e.preventDefault();
+
+if (e.touches.length === 1 && gestureState.type === "move") {
+return;
+}
+
+if (e.touches.length !== 2) return;
+
+const metrics = getTwoTouchMetrics(e.touches);
+const dist = metrics.distance;
+const angle = metrics.angle;
+
+const distDelta = Math.abs(dist - gestureState.lastDistance);
+const angleDelta = Math.abs(angle - gestureState.lastAngle);
+
+/* Decide gesture */
+if (!gestureState.type) {
+const SCALE_THRESHOLD = 5;
+const ROTATE_THRESHOLD = 0.05;
+
+if (distDelta > SCALE_THRESHOLD && distDelta > angleDelta * 100) {
+gestureState.type = "scale";
+} else if (angleDelta > ROTATE_THRESHOLD) {
+gestureState.type = "rotate";
+} else {
+return;
+}
+}
+
+/* Apply locked gesture */
+
+if (gestureState.type === "scale") {
+let scaleFactor = dist / gestureState.lastDistance;
+let newScale = model.scale.x * scaleFactor;
+newScale = Math.max(0.05, Math.min(2, newScale));
+model.scale.set(newScale, newScale, newScale);
+}
+
+if (gestureState.type === "rotate") {
+const deltaAngle = angle - gestureState.lastAngle;
+model.rotation.y -= deltaAngle; // 🔁 REVERSED ROTATION
+}
+
+gestureState.lastDistance = dist;
+gestureState.lastAngle = angle;
+}
+
+/* ---------- TOUCH END ---------- */
+function onTouchEnd() {
+gestureState.isDragging = false;
+gestureState.lastDistance = 0;
+gestureState.type = null;
+}
+
+window.addEventListener('touchstart', onTouchStart, { passive: false });
+window.addEventListener('touchmove', onTouchMove, { passive: false });
+window.addEventListener('touchend', onTouchEnd);
+window.addEventListener('touchcancel', onTouchEnd);
+
+/* ---------- RENDER LOOP ---------- */
+renderer.setAnimationLoop((timestamp, frame) => {
+
+const delta = clock.getDelta();
+if (mixer) mixer.update(delta);
+
+if (frame) {
+
+const session = renderer.xr.getSession();
+
+if (!viewerSpace) {
+session.requestReferenceSpace('viewer').then((space) => {
+viewerSpace = space;
+session.requestHitTestSource({
+space: viewerSpace,
+entityTypes: ['plane']
+}).then((source) => {
+hitTestSource = source;
+});
+
+session.requestHitTestSourceForTransientInput({
+profile: 'generic-touchscreen',
+entityTypes: ['plane']
+}).then((source) => {
+transientHitTestSource = source;
+}).catch(() => {
+transientHitTestSource = null;
+});
+});
+
+session.requestReferenceSpace('local').then((space) => {
+refSpace = space;
+});
+}
+
+if (hitTestSource && refSpace) {
+
+const hits = frame.getHitTestResults(hitTestSource);
+
+if (hits.length > 0) {
+let horizontalPose = null;
+
+for (const hit of hits) {
+const pose = hit.getPose(refSpace);
+if (!pose) continue;
+tmpMatrix.fromArray(pose.transform.matrix);
+if (isHorizontalPose(tmpMatrix)) {
+horizontalPose = pose;
+break;
+}
+}
+
+if (horizontalPose && !placed) {
+reticle.visible = true;
+reticle.matrix.fromArray(horizontalPose.transform.matrix);
+} else if (!placed) {
+reticle.visible = false;
+}
+
+/* ---------- MOVE ---------- */
+if (placed && gestureState.isDragging && gestureState.type === "move" && model) {
+
+let dragPose = null;
+
+if (transientHitTestSource) {
+const transientResults = frame.getHitTestResultsForTransientInput(transientHitTestSource);
+for (const result of transientResults) {
+for (const hit of result.results) {
+const pose = hit.getPose(refSpace);
+if (!pose) continue;
+tmpMatrix.fromArray(pose.transform.matrix);
+if (isHorizontalPose(tmpMatrix)) {
+dragPose = pose;
+break;
+}
+}
+if (dragPose) break;
+}
+}
+
+if (!dragPose && horizontalPose) dragPose = horizontalPose;
+
+if (dragPose) {
+tmpMatrix.fromArray(dragPose.transform.matrix);
+applyHorizontalPlacement(tmpMatrix);
+}
+}
+}
+}
+}
+
+renderer.render(scene, camera);
+});
 
 }
 
