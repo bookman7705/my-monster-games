@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AR Monster - Horizontal Plane Only</title>
+<title>AR Monster - Gesture Locked</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 body { margin: 0; overflow: hidden; background: #111; touch-action: none; }
@@ -87,7 +87,7 @@ const tmpNormal = new THREE.Vector3();
 
 /* ---------- GESTURE STATE ---------- */
 const gestureState = {
-type: null,
+type: null, // 'move' | 'scale' | 'rotate'
 isDragging: false,
 lastAngle: 0,
 lastDistance: 0
@@ -112,8 +112,6 @@ reticle.visible = false;
 });
 scene.add(controller);
 
-/* ---------- HELPERS ---------- */
-
 function getTwoTouchMetrics(touches) {
 const dx = touches[0].pageX - touches[1].pageX;
 const dy = touches[0].pageY - touches[1].pageY;
@@ -129,20 +127,14 @@ tmpNormal.set(0, 1, 0).applyQuaternion(tmpQuaternion).normalize();
 return Math.abs(tmpNormal.dot(worldUp)) > 0.8;
 }
 
-// ✅ improved placement (stable + upright)
 function applyHorizontalPlacement(matrix) {
 matrix.decompose(tmpPosition, tmpQuaternion, tmpScale);
-
-// smooth movement (reduces jitter)
-model.position.lerp(tmpPosition, 0.3);
-
-// keep upright
+model.position.copy(tmpPosition);
 model.rotation.x = 0;
 model.rotation.z = 0;
 }
 
-/* ---------- TOUCH ---------- */
-
+/* ---------- TOUCH START ---------- */
 function onTouchStart(e) {
 if (!placed || !model) return;
 e.preventDefault();
@@ -162,42 +154,60 @@ gestureState.isDragging = false;
 }
 }
 
+/* ---------- TOUCH MOVE ---------- */
 function onTouchMove(e) {
 if (!placed || !model) return;
 e.preventDefault();
 
-if (e.touches.length === 1 && gestureState.type === "move") return;
+if (e.touches.length === 1 && gestureState.type === "move") {
+return;
+}
+
 if (e.touches.length !== 2) return;
 
 const metrics = getTwoTouchMetrics(e.touches);
+const dist = metrics.distance;
+const angle = metrics.angle;
 
-const distDelta = Math.abs(metrics.distance - gestureState.lastDistance);
-const angleDelta = Math.abs(metrics.angle - gestureState.lastAngle);
+const distDelta = Math.abs(dist - gestureState.lastDistance);
+const angleDelta = Math.abs(angle - gestureState.lastAngle);
 
+/* Decide gesture */
 if (!gestureState.type) {
-if (distDelta > 5 && distDelta > angleDelta * 100) {
+const SCALE_THRESHOLD = 5;
+const ROTATE_THRESHOLD = 0.05;
+
+if (distDelta > SCALE_THRESHOLD && distDelta > angleDelta * 100) {
 gestureState.type = "scale";
-} else if (angleDelta > 0.05) {
+} else if (angleDelta > ROTATE_THRESHOLD) {
 gestureState.type = "rotate";
-} else return;
+} else {
+return;
+}
 }
 
+/* Apply locked gesture */
+
 if (gestureState.type === "scale") {
-let scale = model.scale.x * (metrics.distance / gestureState.lastDistance);
-scale = Math.max(0.05, Math.min(2, scale));
-model.scale.setScalar(scale);
+let scaleFactor = dist / gestureState.lastDistance;
+let newScale = model.scale.x * scaleFactor;
+newScale = Math.max(0.05, Math.min(2, newScale));
+model.scale.set(newScale, newScale, newScale);
 }
 
 if (gestureState.type === "rotate") {
-model.rotation.y -= (metrics.angle - gestureState.lastAngle);
+const deltaAngle = angle - gestureState.lastAngle;
+model.rotation.y -= deltaAngle; // 🔁 REVERSED ROTATION
 }
 
-gestureState.lastDistance = metrics.distance;
-gestureState.lastAngle = metrics.angle;
+gestureState.lastDistance = dist;
+gestureState.lastAngle = angle;
 }
 
+/* ---------- TOUCH END ---------- */
 function onTouchEnd() {
 gestureState.isDragging = false;
+gestureState.lastDistance = 0;
 gestureState.type = null;
 }
 
@@ -207,10 +217,10 @@ window.addEventListener('touchend', onTouchEnd);
 window.addEventListener('touchcancel', onTouchEnd);
 
 /* ---------- RENDER LOOP ---------- */
-
 renderer.setAnimationLoop((timestamp, frame) => {
 
-if (mixer) mixer.update(clock.getDelta());
+const delta = clock.getDelta();
+if (mixer) mixer.update(delta);
 
 if (frame) {
 
@@ -219,7 +229,6 @@ const session = renderer.xr.getSession();
 if (!viewerSpace) {
 session.requestReferenceSpace('viewer').then((space) => {
 viewerSpace = space;
-
 session.requestHitTestSource({
 space: viewerSpace,
 entityTypes: ['plane']
@@ -246,21 +255,19 @@ if (hitTestSource && refSpace) {
 
 const hits = frame.getHitTestResults(hitTestSource);
 
+if (hits.length > 0) {
 let horizontalPose = null;
 
 for (const hit of hits) {
 const pose = hit.getPose(refSpace);
 if (!pose) continue;
-
 tmpMatrix.fromArray(pose.transform.matrix);
-
 if (isHorizontalPose(tmpMatrix)) {
 horizontalPose = pose;
 break;
 }
 }
 
-// reticle (unchanged)
 if (horizontalPose && !placed) {
 reticle.visible = true;
 reticle.matrix.fromArray(horizontalPose.transform.matrix);
@@ -268,24 +275,18 @@ reticle.matrix.fromArray(horizontalPose.transform.matrix);
 reticle.visible = false;
 }
 
-/* ---------- MOVE (FIXED) ---------- */
+/* ---------- MOVE ---------- */
 if (placed && gestureState.isDragging && gestureState.type === "move" && model) {
 
 let dragPose = null;
 
-// ONLY use transient (touch-based) hits
 if (transientHitTestSource) {
 const transientResults = frame.getHitTestResultsForTransientInput(transientHitTestSource);
-
 for (const result of transientResults) {
 for (const hit of result.results) {
-
 const pose = hit.getPose(refSpace);
 if (!pose) continue;
-
 tmpMatrix.fromArray(pose.transform.matrix);
-
-// ✅ STRICT horizontal filter
 if (isHorizontalPose(tmpMatrix)) {
 dragPose = pose;
 break;
@@ -295,13 +296,13 @@ if (dragPose) break;
 }
 }
 
-// ✅ ONLY move if we have valid horizontal drag
+if (!dragPose && horizontalPose) dragPose = horizontalPose;
+
 if (dragPose) {
 tmpMatrix.fromArray(dragPose.transform.matrix);
 applyHorizontalPlacement(tmpMatrix);
 }
-
-// ❌ NO FALLBACK → prevents invalid movement
+}
 }
 }
 }
