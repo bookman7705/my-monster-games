@@ -177,23 +177,24 @@ async function loadThreeAR() {
   function onTouchStart(e) {
     if (!placed || !model) return;
     e.preventDefault();
-
-    gestureEnabled = false;
-
+  
+    // ✅ DO NOT reset immediately
+    if (gestureEnabled) return;
+  
     if (e.touches.length === 1) {
       if (!isTouchOnModel(e.touches[0])) return;
-
+  
       gestureEnabled = true;
       gestureState.type = "move";
       gestureState.isDragging = true;
       return;
     }
-
+  
     if (e.touches.length === 2) {
       if (!isTouchOnModel(e.touches[0]) && !isTouchOnModel(e.touches[1])) return;
-
+  
       gestureEnabled = true;
-
+  
       const m = getTwoTouchMetrics(e.touches);
       gestureState.lastDistance = m.distance;
       gestureState.lastAngle = m.angle;
