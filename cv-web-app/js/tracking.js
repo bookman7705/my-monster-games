@@ -2,6 +2,7 @@ let videoRef = null;
 let cvReady = false;
 let prevGray = null;
 let prevPts = null;
+let lastHomography = null;
 
 const MAX_CORNERS = 100;
 const QUALITY_LEVEL = 0.01;
@@ -69,6 +70,71 @@ function replacePrevGray(currentGray) {
   prevGray = currentGray.clone();
 }
 
+function getHomographyStatus(confidence) {
+  if (confidence > 0.6) {
+    return 'stable';
+  }
+  if (confidence >= 0.3) {
+    return 'medium';
+  }
+  return 'unstable';
+}
+
+function estimateHomography(prevPoints, trackedPoints) {
+  const emptyResult = {
+    H: null,
+    inliers: 0,
+    confidence: 0,
+    status: 'unstable'
+  };
+
+  // Need enough matched pairs and strict source/destination alignment.
+  if (prevPoints.length !== trackedPoints.length) {
+    return emptyResult;
+  }
+
+  const totalMatches = trackedPoints.length / 2;
+  if (totalMatches < 20) {
+    return emptyResult;
+  }
+
+  const srcPts = cv.matFromArray(totalMatches, 1, cv.CV_32FC2, prevPoints);
+  const dstPts = cv.matFromArray(totalMatches, 1, cv.CV_32FC2, trackedPoints);
+  const inlierMask = new cv.Mat();
+
+  const H = cv.findHomography(srcPts, dstPts, cv.RANSAC, 3.0, inlierMask);
+
+  srcPts.delete();
+  dstPts.delete();
+
+  if (!H || H.rows === 0 || H.cols === 0) {
+    if (H) {
+      H.delete();
+    }
+    inlierMask.delete();
+    return emptyResult;
+  }
+
+  let inliers = 0;
+  const maskCount = inlierMask.rows * inlierMask.cols;
+  for (let i = 0; i < maskCount; i++) {
+    if (inlierMask.data[i]) {
+      inliers += 1;
+    }
+  }
+  inlierMask.delete();
+
+  const confidence = totalMatches > 0 ? inliers / totalMatches : 0;
+  const status = getHomographyStatus(confidence);
+
+  return {
+    H,
+    inliers,
+    confidence,
+    status
+  };
+}
+
 async function initTracking(video) {
   videoRef = video;
   try {
@@ -89,7 +155,13 @@ function processTrackingFrame(canvas, options = {}) {
       trackedCount: 0,
       trackedPoints: [],
       prevPoints: [],
-      status: 'Tracking LOST'
+      status: 'Tracking LOST',
+      homography: {
+        H: null,
+        inliers: 0,
+        confidence: 0,
+        status: 'unstable'
+      }
     };
   }
 
@@ -103,7 +175,13 @@ function processTrackingFrame(canvas, options = {}) {
     trackedCount: 0,
     trackedPoints: [],
     prevPoints: [],
-    status: 'Tracking LOST'
+    status: 'Tracking LOST',
+    homography: {
+      H: null,
+      inliers: 0,
+      confidence: 0,
+      status: 'unstable'
+    }
   };
 
   try {
@@ -213,12 +291,32 @@ function processTrackingFrame(canvas, options = {}) {
       statusText = 'Tracking OK';
     }
 
+    const homographyEstimate = estimateHomography(prevPoints, trackedPoints);
+
+    // Keep one owned homography Mat alive to avoid leaking old frame results.
+    if (lastHomography) {
+      lastHomography.delete();
+      lastHomography = null;
+    }
+    if (homographyEstimate.H) {
+      lastHomography = homographyEstimate.H;
+      console.log(
+        `Homography updated | inliers: ${homographyEstimate.inliers}, confidence: ${homographyEstimate.confidence.toFixed(2)}, status: ${homographyEstimate.status}`
+      );
+    }
+
     trackedData = {
       loading: false,
       trackedCount,
       trackedPoints,
       prevPoints,
-      status: statusText
+      status: statusText,
+      homography: {
+        H: lastHomography,
+        inliers: homographyEstimate.inliers,
+        confidence: homographyEstimate.confidence,
+        status: homographyEstimate.status
+      }
     };
   } catch (cvError) {
     console.error('Frame tracking error:', cvError);
