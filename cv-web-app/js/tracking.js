@@ -10,20 +10,27 @@ let smoothedEssentialPose = null;
 let lastValidPose = null;
 let lastPoseSource = null;
 
-const MAX_CORNERS = 100;
-const QUALITY_LEVEL = 0.01;
-const MIN_DISTANCE = 10;
+// FIX: More robust feature detection defaults for mobile scenes.
+const MAX_CORNERS = 180;
+const QUALITY_LEVEL = 0.005;
+const MIN_DISTANCE = 7;
 const LOST_THRESHOLD = 20;
 const OK_THRESHOLD = 50;
 const STABLE_THRESHOLD = 80;
-const LOST_FRAME_THRESHOLD = 5;
-const MAX_LK_ERROR = 50;
+// FIX: Increase hysteresis to avoid frequent reset loops.
+const LOST_FRAME_THRESHOLD = 10;
+// FIX: LK error gate was too strict and dropped valid tracks.
+const MAX_LK_ERROR = 80;
+// FIX: Use a stricter reset threshold than HUD LOST threshold.
+const RESET_TRACK_THRESHOLD = 10;
 const MIN_POSE_POINTS = 20;
 const MIN_POINT_SPREAD = 30;
 const POSE_SMOOTH_ALPHA = 0.7;
 const MAX_POSE_TRANSLATION_DELTA = 2.5;
 const MAX_POSE_ROTATION_DELTA = 1.5;
 const MAX_REPROJECTION_ERROR = 5;
+// FIX: Reject abrupt quality drops instead of instantly replacing stable tracks.
+const MIN_TRACK_RETENTION_RATIO = 0.2;
 
 function loadOpenCv() {
   return new Promise((resolve, reject) => {
@@ -147,6 +154,16 @@ function hasSufficientPoseInput(prevPoints, currPoints) {
   );
 }
 
+// FIX: Avoid hard failure on unequal array sizes by pairing only valid overlap.
+function alignPointPairs(prevPoints, currPoints) {
+  const pairCount = Math.min(prevPoints.length, currPoints.length);
+  return {
+    prev: prevPoints.slice(0, pairCount),
+    curr: currPoints.slice(0, pairCount),
+    pairCount
+  };
+}
+
 function smoothArray(nextValues, prevValues, alpha) {
   if (!prevValues || prevValues.length !== nextValues.length) {
     return nextValues.slice();
@@ -229,7 +246,22 @@ function detectFeatures(gray) {
     mask
   );
 
-  const points = matToPoints(corners);
+  let points = matToPoints(corners);
+  // FIX: Retry with softer settings when too few features are detected.
+  if (points.length < 40) {
+    corners.delete();
+    const cornersRetry = new cv.Mat();
+    cv.goodFeaturesToTrack(
+      gray,
+      cornersRetry,
+      Math.max(MAX_CORNERS, 220),
+      0.003,
+      5,
+      mask
+    );
+    points = matToPoints(cornersRetry);
+    cornersRetry.delete();
+  }
   corners.delete();
   mask.delete();
   return points;
@@ -261,18 +293,15 @@ function estimateHomography(prevPoints, trackedPoints) {
     status: 'unstable'
   };
 
-  // Need enough matched pairs and strict source/destination alignment.
-  if (prevPoints.length !== trackedPoints.length) {
-    return emptyResult;
-  }
-
-  const totalMatches = trackedPoints.length;
+  // FIX: Build robust pair alignment instead of requiring exact array equality.
+  const aligned = alignPointPairs(prevPoints, trackedPoints);
+  const totalMatches = aligned.pairCount;
   if (totalMatches < 20) {
     return emptyResult;
   }
 
-  const srcPts = pointsToMatCv32FC2(prevPoints);
-  const dstPts = pointsToMatCv32FC2(trackedPoints);
+  const srcPts = pointsToMatCv32FC2(aligned.prev);
+  const dstPts = pointsToMatCv32FC2(aligned.curr);
   const inlierMask = new cv.Mat();
 
   const H = cv.findHomography(srcPts, dstPts, cv.RANSAC, 3.0, inlierMask);
@@ -442,14 +471,13 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
     status: 'unstable'
   };
 
-  if (prevPoints.length !== trackedPoints.length) {
-    return emptyPose;
-  }
   if (width <= 0 || height <= 0) {
     return emptyPose;
   }
 
-  const N = trackedPoints.length;
+  // FIX: Align pairs by overlap to prevent index mismatch failures.
+  const aligned = alignPointPairs(prevPoints, trackedPoints);
+  const N = aligned.pairCount;
   if (N < 20) {
     return emptyPose;
   }
@@ -471,8 +499,8 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
 
   try {
     // Primary format: Nx2 tends to be more reliable across mobile OpenCV.js builds.
-    srcPts = pointsToMatNx2(prevPoints, cv.CV_64F);
-    dstPts = pointsToMatNx2(trackedPoints, cv.CV_64F);
+    srcPts = pointsToMatNx2(aligned.prev, cv.CV_64F);
+    dstPts = pointsToMatNx2(aligned.curr, cv.CV_64F);
 
     K = cv.matFromArray(3, 3, cv.CV_64F, [
       fx, 0, cx,
@@ -493,8 +521,8 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
       );
     } catch (primaryError) {
       // Fallback format: Nx1 CV_32FC2 for builds that prefer 2-channel point mats.
-      srcPtsFallback = pointsToMatCv32FC2(prevPoints);
-      dstPtsFallback = pointsToMatCv32FC2(trackedPoints);
+      srcPtsFallback = pointsToMatCv32FC2(aligned.prev);
+      dstPtsFallback = pointsToMatCv32FC2(aligned.curr);
       E = cv.findEssentialMat(
         srcPtsFallback,
         dstPtsFallback,
@@ -681,25 +709,38 @@ function getPoseDelta(currentPose, previousPose) {
     currentPose.t[2] - previousPose.t[2]
   );
 
-  const currentR = [
-    currentPose.R[0][0], currentPose.R[0][1], currentPose.R[0][2],
-    currentPose.R[1][0], currentPose.R[1][1], currentPose.R[1][2],
-    currentPose.R[2][0], currentPose.R[2][1], currentPose.R[2][2]
+  // FIX: Use relative rotation angle instead of Euclidean matrix delta.
+  const Rc = currentPose.R;
+  const Rp = previousPose.R;
+  const RpT = [
+    [Rp[0][0], Rp[1][0], Rp[2][0]],
+    [Rp[0][1], Rp[1][1], Rp[2][1]],
+    [Rp[0][2], Rp[1][2], Rp[2][2]]
   ];
-  const prevR = [
-    previousPose.R[0][0], previousPose.R[0][1], previousPose.R[0][2],
-    previousPose.R[1][0], previousPose.R[1][1], previousPose.R[1][2],
-    previousPose.R[2][0], previousPose.R[2][1], previousPose.R[2][2]
+  const Rrel = [
+    [
+      RpT[0][0] * Rc[0][0] + RpT[0][1] * Rc[1][0] + RpT[0][2] * Rc[2][0],
+      RpT[0][0] * Rc[0][1] + RpT[0][1] * Rc[1][1] + RpT[0][2] * Rc[2][1],
+      RpT[0][0] * Rc[0][2] + RpT[0][1] * Rc[1][2] + RpT[0][2] * Rc[2][2]
+    ],
+    [
+      RpT[1][0] * Rc[0][0] + RpT[1][1] * Rc[1][0] + RpT[1][2] * Rc[2][0],
+      RpT[1][0] * Rc[0][1] + RpT[1][1] * Rc[1][1] + RpT[1][2] * Rc[2][1],
+      RpT[1][0] * Rc[0][2] + RpT[1][1] * Rc[1][2] + RpT[1][2] * Rc[2][2]
+    ],
+    [
+      RpT[2][0] * Rc[0][0] + RpT[2][1] * Rc[1][0] + RpT[2][2] * Rc[2][0],
+      RpT[2][0] * Rc[0][1] + RpT[2][1] * Rc[1][1] + RpT[2][2] * Rc[2][1],
+      RpT[2][0] * Rc[0][2] + RpT[2][1] * Rc[1][2] + RpT[2][2] * Rc[2][2]
+    ]
   ];
-  let rotationDeltaSq = 0;
-  for (let i = 0; i < 9; i++) {
-    const diff = currentR[i] - prevR[i];
-    rotationDeltaSq += diff * diff;
-  }
+  const trace = Rrel[0][0] + Rrel[1][1] + Rrel[2][2];
+  const cosTheta = Math.min(1, Math.max(-1, (trace - 1) / 2));
+  const rotationDelta = Math.abs(Math.acos(cosTheta));
 
   return {
     translationDelta,
-    rotationDelta: Math.sqrt(rotationDeltaSq)
+    rotationDelta
   };
 }
 
@@ -931,7 +972,7 @@ function processTrackingFrame(canvas, options = {}) {
           !Number.isFinite(prevPt.y) ||
           !Number.isFinite(currX) ||
           !Number.isFinite(currY) ||
-          lkError > MAX_LK_ERROR
+          (Number.isFinite(lkError) && lkError > MAX_LK_ERROR)
         ) {
           continue;
         }
@@ -949,7 +990,17 @@ function processTrackingFrame(canvas, options = {}) {
     }
 
     let trackedCount = nextFramePoints.length;
-    if (trackedCount < LOST_THRESHOLD) {
+    // FIX: Drop low-quality abrupt updates and preserve last stable tracks.
+    if (
+      previousFramePoints.length > 30 &&
+      trackedCount < (previousFramePoints.length * MIN_TRACK_RETENTION_RATIO)
+    ) {
+      nextFramePoints = previousFramePoints.map((p) => ({ x: p.x, y: p.y }));
+      prevMatchedPoints = [];
+      currMatchedPoints = [];
+      trackedCount = nextFramePoints.length;
+    }
+    if (trackedCount < RESET_TRACK_THRESHOLD) {
       lostFrames += 1;
     } else {
       lostFrames = 0;
@@ -970,14 +1021,13 @@ function processTrackingFrame(canvas, options = {}) {
       ? estimateHomography(prevMatchedPoints, currMatchedPoints)
       : createEmptyHomographyResult();
 
-    // Keep one owned homography Mat alive to avoid leaking old frame results.
+    // FIX: Own homography result directly without unnecessary cloning.
     if (lastHomography) {
       lastHomography.delete();
       lastHomography = null;
     }
     if (homographyEstimate.H) {
-      lastHomography = homographyEstimate.H.clone();
-      homographyEstimate.H.delete();
+      lastHomography = homographyEstimate.H;
       console.log(
         `Homography updated | inliers: ${homographyEstimate.inliers}, confidence: ${homographyEstimate.confidence.toFixed(2)}, status: ${homographyEstimate.status}`
       );
