@@ -239,6 +239,133 @@ function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
   };
 }
 
+function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
+  const emptyPose = {
+    R: [],
+    t: [],
+    inliers: 0,
+    confidence: 0,
+    valid: false,
+    status: 'unstable'
+  };
+
+  if (prevPoints.length !== trackedPoints.length) {
+    return emptyPose;
+  }
+  if (width <= 0 || height <= 0) {
+    return emptyPose;
+  }
+
+  const N = trackedPoints.length / 2;
+  if (N < 20) {
+    return emptyPose;
+  }
+
+  const srcPts = cv.matFromArray(N, 1, cv.CV_32FC2, prevPoints);
+  const dstPts = cv.matFromArray(N, 1, cv.CV_32FC2, trackedPoints);
+
+  const fx = width;
+  const fy = width;
+  const cx = width / 2;
+  const cy = height / 2;
+
+  const K = cv.matFromArray(3, 3, cv.CV_64F, [
+    fx, 0, cx,
+    0, fy, cy,
+    0, 0, 1
+  ]);
+
+  const mask = new cv.Mat();
+  const E = cv.findEssentialMat(
+    srcPts,
+    dstPts,
+    K,
+    cv.RANSAC,
+    0.999,
+    1.0,
+    mask
+  );
+
+  if (!E || E.rows === 0 || E.cols === 0) {
+    if (E) {
+      E.delete();
+    }
+    srcPts.delete();
+    dstPts.delete();
+    K.delete();
+    mask.delete();
+    return emptyPose;
+  }
+
+  const R = new cv.Mat();
+  const t = new cv.Mat();
+
+  let inliers = 0;
+  try {
+    inliers = cv.recoverPose(
+      E,
+      srcPts,
+      dstPts,
+      K,
+      R,
+      t,
+      mask
+    );
+  } catch (error) {
+    srcPts.delete();
+    dstPts.delete();
+    K.delete();
+    mask.delete();
+    E.delete();
+    R.delete();
+    t.delete();
+    return emptyPose;
+  }
+
+  const rotationFlat = matToFlatArray(R);
+  const translationFlat = matToFlatArray(t);
+
+  const rotation = rotationFlat.length >= 9
+    ? [
+      [rotationFlat[0], rotationFlat[1], rotationFlat[2]],
+      [rotationFlat[3], rotationFlat[4], rotationFlat[5]],
+      [rotationFlat[6], rotationFlat[7], rotationFlat[8]]
+    ]
+    : [];
+  const translation = translationFlat.length >= 3
+    ? [translationFlat[0], translationFlat[1], translationFlat[2]]
+    : [];
+
+  const confidence = N > 0 ? inliers / N : 0;
+  const translationMagnitude = translation.length === 3
+    ? Math.hypot(translation[0], translation[1], translation[2])
+    : 0;
+  const valid = (
+    inliers > 30 &&
+    confidence > 0.5 &&
+    translationMagnitude > 0.001 &&
+    rotation.length === 3 &&
+    translation.length === 3
+  );
+
+  srcPts.delete();
+  dstPts.delete();
+  K.delete();
+  mask.delete();
+  E.delete();
+  R.delete();
+  t.delete();
+
+  return {
+    R: rotation,
+    t: translation,
+    inliers,
+    confidence,
+    valid,
+    status: confidence > 0.6 ? 'stable' : 'unstable'
+  };
+}
+
 async function initTracking(video) {
   videoRef = video;
   try {
@@ -270,6 +397,14 @@ function processTrackingFrame(canvas, options = {}) {
         R: [],
         t: [],
         valid: false
+      },
+      poseEssential: {
+        R: [],
+        t: [],
+        inliers: 0,
+        confidence: 0,
+        valid: false,
+        status: 'unstable'
       }
     };
   }
@@ -295,6 +430,14 @@ function processTrackingFrame(canvas, options = {}) {
       R: [],
       t: [],
       valid: false
+    },
+    poseEssential: {
+      R: [],
+      t: [],
+      inliers: 0,
+      confidence: 0,
+      valid: false,
+      status: 'unstable'
     }
   };
 
@@ -436,6 +579,21 @@ function processTrackingFrame(canvas, options = {}) {
       console.log('Pose decomposition unavailable for current stable homography');
     }
 
+    const essentialPose = estimateEssentialPose(
+      prevPoints,
+      trackedPoints,
+      canvas.width,
+      canvas.height
+    );
+    if (essentialPose.valid) {
+      console.log('Essential Pose:', {
+        inliers: essentialPose.inliers,
+        confidence: essentialPose.confidence.toFixed(2),
+        t: essentialPose.t,
+        valid: essentialPose.valid
+      });
+    }
+
     trackedData = {
       loading: false,
       trackedCount,
@@ -448,7 +606,8 @@ function processTrackingFrame(canvas, options = {}) {
         confidence: homographyEstimate.confidence,
         status: homographyEstimate.status
       },
-      pose
+      pose,
+      poseEssential: essentialPose
     };
   } catch (cvError) {
     console.error('Frame tracking error:', cvError);
