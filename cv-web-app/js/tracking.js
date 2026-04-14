@@ -269,8 +269,8 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
   let R = null;
   let t = null;
 
-  const fx = width;
-  const fy = width;
+  const fx = width * 0.9;
+  const fy = height * 0.9;
   const cx = width / 2;
   const cy = height / 2;
 
@@ -331,17 +331,31 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
       ? [translationFlat[0], translationFlat[1], translationFlat[2]]
       : [];
 
+    if (translation.length === 3) {
+      const mag = Math.hypot(translation[0], translation[1], translation[2]);
+      if (mag > 1e-6) {
+        translation[0] /= mag;
+        translation[1] /= mag;
+        translation[2] /= mag;
+      }
+    }
+
     const confidence = N > 0 ? inliers / N : 0;
-    const translationMagnitude = translation.length === 3
-      ? Math.hypot(translation[0], translation[1], translation[2])
-      : 0;
     const valid = (
-      inliers > 30 &&
-      confidence > 0.5 &&
-      translationMagnitude > 0.001 &&
+      inliers > 15 &&
+      confidence > 0.3 &&
       rotation.length === 3 &&
       translation.length === 3
     );
+
+    if (!valid) {
+      console.log('Essential pose rejected:', {
+        inliers,
+        confidence,
+        rotationValid: rotation.length === 3,
+        translationValid: translation.length === 3
+      });
+    }
 
     return {
       R: rotation,
