@@ -1,9 +1,11 @@
 let debugDrawEnabled = true;
+let homographyDebugEnabled = true;
 let redetectRequested = false;
 
 let counterText = null;
 let trackingText = null;
 let debugToggleBtn = null;
+let homographyDebugBtn = null;
 
 function updateDebugButtonLabel() {
   if (!debugToggleBtn) {
@@ -18,6 +20,21 @@ function toggleDebugDrawing() {
   console.log(`Debug drawing ${debugDrawEnabled ? 'enabled' : 'disabled'}`);
 }
 
+function updateHomographyButtonLabel() {
+  if (!homographyDebugBtn) {
+    return;
+  }
+  homographyDebugBtn.textContent = homographyDebugEnabled
+    ? 'Homography Debug: ON'
+    : 'Homography Debug: OFF';
+}
+
+function toggleHomographyDebug() {
+  homographyDebugEnabled = !homographyDebugEnabled;
+  window.__homographyDebugEnabled = homographyDebugEnabled;
+  updateHomographyButtonLabel();
+}
+
 function initUI() {
   const hud = document.createElement('div');
   counterText = document.createElement('div');
@@ -25,6 +42,7 @@ function initUI() {
   const helpText = document.createElement('div');
   const controls = document.createElement('div');
   debugToggleBtn = document.createElement('button');
+  homographyDebugBtn = document.createElement('button');
   const redetectBtn = document.createElement('button');
 
   hud.style.position = 'fixed';
@@ -71,7 +89,17 @@ function initUI() {
   redetectBtn.style.cursor = 'pointer';
   redetectBtn.style.touchAction = 'manipulation';
 
+  homographyDebugBtn.style.padding = '10px 12px';
+  homographyDebugBtn.style.border = '1px solid #fff';
+  homographyDebugBtn.style.borderRadius = '8px';
+  homographyDebugBtn.style.background = 'rgba(0, 0, 0, 0.65)';
+  homographyDebugBtn.style.color = '#fff';
+  homographyDebugBtn.style.fontSize = '14px';
+  homographyDebugBtn.style.cursor = 'pointer';
+  homographyDebugBtn.style.touchAction = 'manipulation';
+
   debugToggleBtn.addEventListener('click', toggleDebugDrawing);
+  homographyDebugBtn.addEventListener('click', toggleHomographyDebug);
   redetectBtn.textContent = 'Re-detect Features';
   redetectBtn.addEventListener('click', () => {
     // Defers reset to the frame loop so OpenCV state changes stay synchronized.
@@ -84,8 +112,11 @@ function initUI() {
     }
   });
 
+  window.__homographyDebugEnabled = homographyDebugEnabled;
   updateDebugButtonLabel();
+  updateHomographyButtonLabel();
   controls.appendChild(debugToggleBtn);
+  controls.appendChild(homographyDebugBtn);
   controls.appendChild(redetectBtn);
 
   hud.appendChild(counterText);
@@ -117,10 +148,20 @@ function isDebugDrawEnabled() {
   return debugDrawEnabled;
 }
 
+function isHomographyDebugEnabled() {
+  return homographyDebugEnabled;
+}
+
 function consumeRedetectRequest() {
   const requested = redetectRequested;
   redetectRequested = false;
   return requested;
 }
 
-export { initUI, updateHUD, isDebugDrawEnabled, consumeRedetectRequest };
+export {
+  initUI,
+  updateHUD,
+  isDebugDrawEnabled,
+  isHomographyDebugEnabled,
+  consumeRedetectRequest
+};
