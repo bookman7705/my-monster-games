@@ -1,7 +1,3 @@
-function isHomographyDebugEnabled() {
-  return window.__homographyDebugEnabled !== false;
-}
-
 function getHomographyOverlayColor(homography) {
   if (!homography || !homography.H) {
     return 'rgba(100,100,100,0.1)';
@@ -257,7 +253,7 @@ function drawPoseInfoPanel(ctx, trackingData) {
   ctx.fillText(`Rot: ${rot.rx.toFixed(1)}, ${rot.ry.toFixed(1)}, ${rot.rz.toFixed(1)}`, panelX + 10, panelY + 128);
 }
 
-function drawTracking(ctx, trackingData, debugEnabled) {
+function drawTracking(ctx, trackingData, debugEnabled, homographyDebugEnabled = true) {
   if (!trackingData) {
     return;
   }
@@ -269,7 +265,7 @@ function drawTracking(ctx, trackingData, debugEnabled) {
     return;
   }
 
-  if (isHomographyDebugEnabled()) {
+  if (homographyDebugEnabled) {
     drawHomographyBackground(ctx, trackingData);
     drawHomographyInfoPanel(ctx, trackingData);
     drawPoseInfoPanel(ctx, trackingData);
