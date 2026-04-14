@@ -261,109 +261,107 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
     return emptyPose;
   }
 
-  const srcPts = cv.matFromArray(N, 1, cv.CV_32FC2, prevPoints);
-  const dstPts = cv.matFromArray(N, 1, cv.CV_32FC2, trackedPoints);
+  let srcPts = null;
+  let dstPts = null;
+  let K = null;
+  let mask = null;
+  let E = null;
+  let R = null;
+  let t = null;
 
   const fx = width;
   const fy = width;
   const cx = width / 2;
   const cy = height / 2;
 
-  const K = cv.matFromArray(3, 3, cv.CV_64F, [
-    fx, 0, cx,
-    0, fy, cy,
-    0, 0, 1
-  ]);
-
-  const mask = new cv.Mat();
-  const E = cv.findEssentialMat(
-    srcPts,
-    dstPts,
-    K,
-    cv.RANSAC,
-    0.999,
-    1.0,
-    mask
-  );
-
-  if (!E || E.rows === 0 || E.cols === 0) {
-    if (E) {
-      E.delete();
-    }
-    srcPts.delete();
-    dstPts.delete();
-    K.delete();
-    mask.delete();
-    return emptyPose;
-  }
-
-  const R = new cv.Mat();
-  const t = new cv.Mat();
-
-  let inliers = 0;
   try {
-    inliers = cv.recoverPose(
-      E,
+    srcPts = cv.matFromArray(N, 1, cv.CV_32FC2, prevPoints);
+    dstPts = cv.matFromArray(N, 1, cv.CV_32FC2, trackedPoints);
+
+    K = cv.matFromArray(3, 3, cv.CV_64F, [
+      fx, 0, cx,
+      0, fy, cy,
+      0, 0, 1
+    ]);
+
+    mask = new cv.Mat();
+    E = cv.findEssentialMat(
       srcPts,
       dstPts,
       K,
-      R,
-      t,
+      cv.RANSAC,
+      0.999,
+      1.0,
       mask
     );
+
+    if (!E || E.rows === 0 || E.cols === 0) {
+      return emptyPose;
+    }
+
+    R = new cv.Mat();
+    t = new cv.Mat();
+
+    let inliers = 0;
+    try {
+      inliers = cv.recoverPose(
+        E,
+        srcPts,
+        dstPts,
+        K,
+        R,
+        t,
+        mask
+      );
+    } catch (error) {
+      return emptyPose;
+    }
+
+    const rotationFlat = matToFlatArray(R);
+    const translationFlat = matToFlatArray(t);
+
+    const rotation = rotationFlat.length >= 9
+      ? [
+        [rotationFlat[0], rotationFlat[1], rotationFlat[2]],
+        [rotationFlat[3], rotationFlat[4], rotationFlat[5]],
+        [rotationFlat[6], rotationFlat[7], rotationFlat[8]]
+      ]
+      : [];
+    const translation = translationFlat.length >= 3
+      ? [translationFlat[0], translationFlat[1], translationFlat[2]]
+      : [];
+
+    const confidence = N > 0 ? inliers / N : 0;
+    const translationMagnitude = translation.length === 3
+      ? Math.hypot(translation[0], translation[1], translation[2])
+      : 0;
+    const valid = (
+      inliers > 30 &&
+      confidence > 0.5 &&
+      translationMagnitude > 0.001 &&
+      rotation.length === 3 &&
+      translation.length === 3
+    );
+
+    return {
+      R: rotation,
+      t: translation,
+      inliers,
+      confidence,
+      valid,
+      status: confidence > 0.6 ? 'stable' : 'unstable'
+    };
   } catch (error) {
-    srcPts.delete();
-    dstPts.delete();
-    K.delete();
-    mask.delete();
-    E.delete();
-    R.delete();
-    t.delete();
     return emptyPose;
+  } finally {
+    if (srcPts) srcPts.delete();
+    if (dstPts) dstPts.delete();
+    if (K) K.delete();
+    if (mask) mask.delete();
+    if (E) E.delete();
+    if (R) R.delete();
+    if (t) t.delete();
   }
-
-  const rotationFlat = matToFlatArray(R);
-  const translationFlat = matToFlatArray(t);
-
-  const rotation = rotationFlat.length >= 9
-    ? [
-      [rotationFlat[0], rotationFlat[1], rotationFlat[2]],
-      [rotationFlat[3], rotationFlat[4], rotationFlat[5]],
-      [rotationFlat[6], rotationFlat[7], rotationFlat[8]]
-    ]
-    : [];
-  const translation = translationFlat.length >= 3
-    ? [translationFlat[0], translationFlat[1], translationFlat[2]]
-    : [];
-
-  const confidence = N > 0 ? inliers / N : 0;
-  const translationMagnitude = translation.length === 3
-    ? Math.hypot(translation[0], translation[1], translation[2])
-    : 0;
-  const valid = (
-    inliers > 30 &&
-    confidence > 0.5 &&
-    translationMagnitude > 0.001 &&
-    rotation.length === 3 &&
-    translation.length === 3
-  );
-
-  srcPts.delete();
-  dstPts.delete();
-  K.delete();
-  mask.delete();
-  E.delete();
-  R.delete();
-  t.delete();
-
-  return {
-    R: rotation,
-    t: translation,
-    inliers,
-    confidence,
-    valid,
-    status: confidence > 0.6 ? 'stable' : 'unstable'
-  };
 }
 
 async function initTracking(video) {
