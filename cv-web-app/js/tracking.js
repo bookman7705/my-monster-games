@@ -135,6 +135,90 @@ function estimateHomography(prevPoints, trackedPoints) {
   };
 }
 
+function matToFlatArray(mat) {
+  const data = mat.data64F || mat.data32F;
+  if (!data) {
+    return [];
+  }
+  return Array.from(data);
+}
+
+function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
+  const emptyPose = {
+    R: [],
+    t: [],
+    valid: false
+  };
+
+  if (!H || canvasWidth <= 0 || canvasHeight <= 0) {
+    return emptyPose;
+  }
+
+  const fx = canvasWidth;
+  const fy = canvasWidth;
+  const cx = canvasWidth / 2;
+  const cy = canvasHeight / 2;
+
+  const K = cv.matFromArray(3, 3, cv.CV_64F, [
+    fx, 0, cx,
+    0, fy, cy,
+    0, 0, 1
+  ]);
+
+  const rotations = new cv.MatVector();
+  const translations = new cv.MatVector();
+  const normals = new cv.MatVector();
+
+  let solutionCount = 0;
+  try {
+    solutionCount = cv.decomposeHomographyMat(H, K, rotations, translations, normals);
+  } catch (error) {
+    K.delete();
+    rotations.delete();
+    translations.delete();
+    normals.delete();
+    return emptyPose;
+  }
+
+  if (solutionCount <= 0) {
+    K.delete();
+    rotations.delete();
+    translations.delete();
+    normals.delete();
+    return emptyPose;
+  }
+
+  const rotationMat = rotations.get(0);
+  const translationMat = translations.get(0);
+
+  const rotationFlat = matToFlatArray(rotationMat);
+  const translationFlat = matToFlatArray(translationMat);
+
+  const R = rotationFlat.length >= 9
+    ? [
+      [rotationFlat[0], rotationFlat[1], rotationFlat[2]],
+      [rotationFlat[3], rotationFlat[4], rotationFlat[5]],
+      [rotationFlat[6], rotationFlat[7], rotationFlat[8]]
+    ]
+    : [];
+  const t = translationFlat.length >= 3
+    ? [translationFlat[0], translationFlat[1], translationFlat[2]]
+    : [];
+
+  rotationMat.delete();
+  translationMat.delete();
+  K.delete();
+  rotations.delete();
+  translations.delete();
+  normals.delete();
+
+  return {
+    R,
+    t,
+    valid: R.length === 3 && t.length === 3
+  };
+}
+
 async function initTracking(video) {
   videoRef = video;
   try {
@@ -161,6 +245,11 @@ function processTrackingFrame(canvas, options = {}) {
         inliers: 0,
         confidence: 0,
         status: 'unstable'
+      },
+      pose: {
+        R: [],
+        t: [],
+        valid: false
       }
     };
   }
@@ -181,6 +270,11 @@ function processTrackingFrame(canvas, options = {}) {
       inliers: 0,
       confidence: 0,
       status: 'unstable'
+    },
+    pose: {
+      R: [],
+      t: [],
+      valid: false
     }
   };
 
@@ -305,6 +399,20 @@ function processTrackingFrame(canvas, options = {}) {
       );
     }
 
+    const poseEstimate = estimatePoseFromHomography(
+      lastHomography,
+      canvas.width,
+      canvas.height
+    );
+    const poseValidByStability = (
+      homographyEstimate.status === 'stable' && homographyEstimate.confidence > 0.6
+    );
+    const pose = {
+      R: poseEstimate.R,
+      t: poseEstimate.t,
+      valid: poseEstimate.valid && poseValidByStability
+    };
+
     trackedData = {
       loading: false,
       trackedCount,
@@ -316,7 +424,8 @@ function processTrackingFrame(canvas, options = {}) {
         inliers: homographyEstimate.inliers,
         confidence: homographyEstimate.confidence,
         status: homographyEstimate.status
-      }
+      },
+      pose
     };
   } catch (cvError) {
     console.error('Frame tracking error:', cvError);
