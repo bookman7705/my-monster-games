@@ -8,6 +8,7 @@ let prevGray = null;
 let prevPts = null;
 let activeTrackedPoints = 0;
 let debugDrawEnabled = true;
+let forceRedetectRequested = false;
 
 const MAX_CORNERS = 100;
 const QUALITY_LEVEL = 0.01;
@@ -20,6 +21,9 @@ const hud = document.createElement('div');
 const counterText = document.createElement('div');
 const trackingText = document.createElement('div');
 const helpText = document.createElement('div');
+const controls = document.createElement('div');
+const debugToggleBtn = document.createElement('button');
+const redetectBtn = document.createElement('button');
 
 hud.style.position = 'fixed';
 hud.style.top = '12px';
@@ -36,12 +40,62 @@ hud.style.pointerEvents = 'none';
 
 helpText.style.opacity = '0.8';
 helpText.style.fontSize = '12px';
-helpText.textContent = 'Press "d" to toggle debug drawing';
+helpText.textContent = 'Mobile controls enabled (keyboard "d" also works)';
+
+controls.style.position = 'fixed';
+controls.style.left = '12px';
+controls.style.bottom = '12px';
+controls.style.display = 'flex';
+controls.style.flexDirection = 'column';
+controls.style.gap = '8px';
+controls.style.zIndex = '9999';
+controls.style.pointerEvents = 'auto';
+
+debugToggleBtn.style.padding = '10px 12px';
+debugToggleBtn.style.border = '1px solid #fff';
+debugToggleBtn.style.borderRadius = '8px';
+debugToggleBtn.style.background = 'rgba(0, 0, 0, 0.65)';
+debugToggleBtn.style.color = '#fff';
+debugToggleBtn.style.fontSize = '14px';
+debugToggleBtn.style.cursor = 'pointer';
+debugToggleBtn.style.touchAction = 'manipulation';
+
+redetectBtn.style.padding = '10px 12px';
+redetectBtn.style.border = '1px solid #fff';
+redetectBtn.style.borderRadius = '8px';
+redetectBtn.style.background = 'rgba(0, 0, 0, 0.65)';
+redetectBtn.style.color = '#fff';
+redetectBtn.style.fontSize = '14px';
+redetectBtn.style.cursor = 'pointer';
+redetectBtn.style.touchAction = 'manipulation';
+
+function updateDebugButtonLabel() {
+  debugToggleBtn.textContent = debugDrawEnabled ? 'Debug Draw: ON' : 'Debug Draw: OFF';
+}
+
+function toggleDebugDrawing() {
+  debugDrawEnabled = !debugDrawEnabled;
+  updateDebugButtonLabel();
+  console.log(`Debug drawing ${debugDrawEnabled ? 'enabled' : 'disabled'}`);
+}
+
+debugToggleBtn.addEventListener('click', toggleDebugDrawing);
+
+redetectBtn.textContent = 'Re-detect Features';
+redetectBtn.addEventListener('click', () => {
+  // Defers reset to the frame loop so OpenCV state changes stay synchronized.
+  forceRedetectRequested = true;
+});
+
+updateDebugButtonLabel();
+controls.appendChild(debugToggleBtn);
+controls.appendChild(redetectBtn);
 
 hud.appendChild(counterText);
 hud.appendChild(trackingText);
 hud.appendChild(helpText);
 document.body.appendChild(hud);
+document.body.appendChild(controls);
 
 function updateHud(points) {
   activeTrackedPoints = points;
@@ -113,8 +167,7 @@ function replacePrevGray(currentGray) {
 
 document.addEventListener('keydown', (event) => {
   if (event.key && event.key.toLowerCase() === 'd') {
-    debugDrawEnabled = !debugDrawEnabled;
-    console.log(`Debug drawing ${debugDrawEnabled ? 'enabled' : 'disabled'}`);
+    toggleDebugDrawing();
   }
 });
 
@@ -159,6 +212,19 @@ function processFrame() {
 
     let pointsToUse = prevPts;
     let redetectedThisFrame = false;
+
+    if (forceRedetectRequested) {
+      if (prevPts) {
+        prevPts.delete();
+        prevPts = null;
+      }
+      if (prevGray) {
+        prevGray.delete();
+        prevGray = null;
+      }
+      forceRedetectRequested = false;
+      console.log('Manual feature re-detection requested');
+    }
 
     // First frame or recovery path: detect strong corners to bootstrap tracking.
     if (!prevGray || !prevPts || prevPts.rows < LOST_THRESHOLD) {
