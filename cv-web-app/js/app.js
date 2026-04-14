@@ -1,5 +1,5 @@
 import { initCamera, getVideo } from './camera.js';
-import { initTracking, processTrackingFrame } from './tracking.js?v=tracking-fix-4';
+import { initTracking, processTrackingFrame } from './tracking.js?v=tracking-fix-5';
 import { drawTracking } from './visualization.js';
 import {
   initUI,
