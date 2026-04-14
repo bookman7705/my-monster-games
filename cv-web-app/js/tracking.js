@@ -137,10 +137,24 @@ function estimateHomography(prevPoints, trackedPoints) {
 
 function matToFlatArray(mat) {
   const data = mat.data64F || mat.data32F;
-  if (!data) {
-    return [];
+  if (data && data.length > 0) {
+    return Array.from(data);
   }
-  return Array.from(data);
+
+  // Fallback for OpenCV.js builds where typed array views are unavailable.
+  const values = [];
+  for (let r = 0; r < mat.rows; r++) {
+    for (let c = 0; c < mat.cols; c++) {
+      if (typeof mat.doubleAt === 'function') {
+        values.push(mat.doubleAt(r, c));
+      } else if (typeof mat.floatAt === 'function') {
+        values.push(mat.floatAt(r, c));
+      } else {
+        return [];
+      }
+    }
+  }
+  return values;
 }
 
 function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
@@ -168,11 +182,15 @@ function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
   const rotations = new cv.MatVector();
   const translations = new cv.MatVector();
   const normals = new cv.MatVector();
+  const h64 = new cv.Mat();
 
   let solutionCount = 0;
   try {
-    solutionCount = cv.decomposeHomographyMat(H, K, rotations, translations, normals);
+    // Some mobile OpenCV.js builds are strict about homography depth.
+    H.convertTo(h64, cv.CV_64F);
+    solutionCount = cv.decomposeHomographyMat(h64, K, rotations, translations, normals);
   } catch (error) {
+    h64.delete();
     K.delete();
     rotations.delete();
     translations.delete();
@@ -181,6 +199,7 @@ function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
   }
 
   if (solutionCount <= 0) {
+    h64.delete();
     K.delete();
     rotations.delete();
     translations.delete();
@@ -207,6 +226,7 @@ function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
 
   rotationMat.delete();
   translationMat.delete();
+  h64.delete();
   K.delete();
   rotations.delete();
   translations.delete();
@@ -412,6 +432,9 @@ function processTrackingFrame(canvas, options = {}) {
       t: poseEstimate.t,
       valid: poseEstimate.valid && poseValidByStability
     };
+    if (homographyEstimate.status === 'stable' && !pose.valid) {
+      console.log('Pose decomposition unavailable for current stable homography');
+    }
 
     trackedData = {
       loading: false,
