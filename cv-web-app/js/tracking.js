@@ -1,14 +1,29 @@
 let videoRef = null;
 let cvReady = false;
 let prevGray = null;
-let prevPts = null;
+let prevFramePts = [];
 let lastHomography = null;
+let lostFrames = 0;
+let trackingState = 'Tracking LOST';
+let smoothedHomographyPose = null;
+let smoothedEssentialPose = null;
+let lastValidPose = null;
+let lastPoseSource = null;
 
 const MAX_CORNERS = 100;
 const QUALITY_LEVEL = 0.01;
 const MIN_DISTANCE = 10;
 const LOST_THRESHOLD = 20;
 const OK_THRESHOLD = 50;
+const STABLE_THRESHOLD = 80;
+const LOST_FRAME_THRESHOLD = 5;
+const MAX_LK_ERROR = 30;
+const MIN_POSE_POINTS = 20;
+const MIN_POINT_SPREAD = 30;
+const POSE_SMOOTH_ALPHA = 0.7;
+const MAX_POSE_TRANSLATION_DELTA = 2.5;
+const MAX_POSE_ROTATION_DELTA = 1.5;
+const MAX_REPROJECTION_ERROR = 5;
 
 function loadOpenCv() {
   return new Promise((resolve, reject) => {
@@ -36,6 +51,129 @@ function loadOpenCv() {
   });
 }
 
+function pointsToFlatArray(points) {
+  const flat = [];
+  for (let i = 0; i < points.length; i++) {
+    flat.push(points[i].x, points[i].y);
+  }
+  return flat;
+}
+
+function flatArrayToPoints(flat) {
+  const points = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    points.push({ x: flat[i], y: flat[i + 1] });
+  }
+  return points;
+}
+
+function pointsToMatNx2(points, depth = cv.CV_64F) {
+  return cv.matFromArray(points.length, 2, depth, pointsToFlatArray(points));
+}
+
+function pointsToMatCv32FC2(points) {
+  return cv.matFromArray(points.length, 1, cv.CV_32FC2, pointsToFlatArray(points));
+}
+
+function matToPoints(pointsMat) {
+  return flatArrayToPoints(matToFlatArray(pointsMat));
+}
+
+function pointSpread(points) {
+  if (!points || points.length === 0) {
+    return 0;
+  }
+  let minX = points[0].x;
+  let maxX = points[0].x;
+  let minY = points[0].y;
+  let maxY = points[0].y;
+  for (let i = 1; i < points.length; i++) {
+    const p = points[i];
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return Math.hypot(maxX - minX, maxY - minY);
+}
+
+function hasSufficientPoseInput(prevPoints, currPoints) {
+  return (
+    prevPoints.length >= MIN_POSE_POINTS &&
+    currPoints.length >= MIN_POSE_POINTS &&
+    pointSpread(prevPoints) >= MIN_POINT_SPREAD &&
+    pointSpread(currPoints) >= MIN_POINT_SPREAD
+  );
+}
+
+function smoothArray(nextValues, prevValues, alpha) {
+  if (!prevValues || prevValues.length !== nextValues.length) {
+    return nextValues.slice();
+  }
+  const smoothed = [];
+  for (let i = 0; i < nextValues.length; i++) {
+    smoothed.push((alpha * nextValues[i]) + ((1 - alpha) * prevValues[i]));
+  }
+  return smoothed;
+}
+
+function smoothPose(nextPose, prevPose) {
+  if (!nextPose.valid) {
+    return nextPose;
+  }
+
+  if (!prevPose || !prevPose.valid) {
+    return {
+      R: nextPose.R.map((row) => row.slice()),
+      t: nextPose.t.slice(),
+      valid: true
+    };
+  }
+
+  const nextRFlat = [
+    nextPose.R[0][0], nextPose.R[0][1], nextPose.R[0][2],
+    nextPose.R[1][0], nextPose.R[1][1], nextPose.R[1][2],
+    nextPose.R[2][0], nextPose.R[2][1], nextPose.R[2][2]
+  ];
+  const prevRFlat = [
+    prevPose.R[0][0], prevPose.R[0][1], prevPose.R[0][2],
+    prevPose.R[1][0], prevPose.R[1][1], prevPose.R[1][2],
+    prevPose.R[2][0], prevPose.R[2][1], prevPose.R[2][2]
+  ];
+  const smoothedRFlat = smoothArray(nextRFlat, prevRFlat, POSE_SMOOTH_ALPHA);
+  const smoothedR = [
+    [smoothedRFlat[0], smoothedRFlat[1], smoothedRFlat[2]],
+    [smoothedRFlat[3], smoothedRFlat[4], smoothedRFlat[5]],
+    [smoothedRFlat[6], smoothedRFlat[7], smoothedRFlat[8]]
+  ];
+  const smoothedT = smoothArray(nextPose.t, prevPose.t, POSE_SMOOTH_ALPHA);
+
+  return {
+    R: smoothedR,
+    t: smoothedT,
+    valid: true
+  };
+}
+
+function classifyTrackingStatus(trackedCount) {
+  if (trackingState === 'Tracking LOST') {
+    if (trackedCount > OK_THRESHOLD) {
+      trackingState = trackedCount > STABLE_THRESHOLD ? 'Tracking STABLE' : 'Tracking OK';
+    }
+  } else if (trackingState === 'Tracking STABLE') {
+    if (trackedCount < OK_THRESHOLD) {
+      trackingState = trackedCount < LOST_THRESHOLD ? 'Tracking LOST' : 'Tracking OK';
+    }
+  } else {
+    if (trackedCount < LOST_THRESHOLD) {
+      trackingState = 'Tracking LOST';
+    } else if (trackedCount > STABLE_THRESHOLD) {
+      trackingState = 'Tracking STABLE';
+    }
+  }
+  return trackingState;
+}
+
 // Detect corner-like features that are stable anchors for SLAM tracking.
 function detectFeatures(gray) {
   const corners = new cv.Mat();
@@ -50,16 +188,10 @@ function detectFeatures(gray) {
     mask
   );
 
+  const points = matToPoints(corners);
+  corners.delete();
   mask.delete();
-  return corners;
-}
-
-function matPointCount(pointsMat) {
-  if (!pointsMat || typeof pointsMat.rows !== 'number' || typeof pointsMat.cols !== 'number') {
-    return 0;
-  }
-  // OpenCV.js may return point vectors as Nx1 or 1xN; both represent N points.
-  return pointsMat.rows * pointsMat.cols;
+  return points;
 }
 
 function replacePrevGray(currentGray) {
@@ -93,13 +225,13 @@ function estimateHomography(prevPoints, trackedPoints) {
     return emptyResult;
   }
 
-  const totalMatches = trackedPoints.length / 2;
+  const totalMatches = trackedPoints.length;
   if (totalMatches < 20) {
     return emptyResult;
   }
 
-  const srcPts = cv.matFromArray(totalMatches, 1, cv.CV_32FC2, prevPoints);
-  const dstPts = cv.matFromArray(totalMatches, 1, cv.CV_32FC2, trackedPoints);
+  const srcPts = pointsToMatCv32FC2(prevPoints);
+  const dstPts = pointsToMatCv32FC2(trackedPoints);
   const inlierMask = new cv.Mat();
 
   const H = cv.findHomography(srcPts, dstPts, cv.RANSAC, 3.0, inlierMask);
@@ -168,8 +300,9 @@ function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
     return emptyPose;
   }
 
-  const fx = canvasWidth;
-  const fy = canvasWidth;
+  const focal = 0.9 * Math.max(canvasWidth, canvasHeight);
+  const fx = focal;
+  const fy = focal;
   const cx = canvasWidth / 2;
   const cy = canvasHeight / 2;
 
@@ -190,6 +323,7 @@ function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
     H.convertTo(h64, cv.CV_64F);
     solutionCount = cv.decomposeHomographyMat(h64, K, rotations, translations, normals);
   } catch (error) {
+    console.log('[POSE DEBUG] decomposition failed or returned empty result');
     h64.delete();
     K.delete();
     rotations.delete();
@@ -197,8 +331,11 @@ function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
     normals.delete();
     return emptyPose;
   }
+
+  console.log('[POSE DEBUG] solutions:', solutionCount);
 
   if (solutionCount <= 0) {
+    console.log('[POSE DEBUG] decomposition failed or returned empty result');
     h64.delete();
     K.delete();
     rotations.delete();
@@ -207,25 +344,40 @@ function estimatePoseFromHomography(H, canvasWidth, canvasHeight) {
     return emptyPose;
   }
 
-  const rotationMat = rotations.get(0);
-  const translationMat = translations.get(0);
+  let R = [];
+  let t = [];
+  let rotationFlat = [];
+  let translationFlat = [];
+  const solutionLimit = Math.min(solutionCount, 2);
+  for (let i = 0; i < solutionLimit; i++) {
+    const rotationMat = rotations.get(i);
+    const translationMat = translations.get(i);
 
-  const rotationFlat = matToFlatArray(rotationMat);
-  const translationFlat = matToFlatArray(translationMat);
+    rotationFlat = matToFlatArray(rotationMat);
+    translationFlat = matToFlatArray(translationMat);
+    console.log('[POSE DEBUG] R:', rotationFlat);
+    console.log('[POSE DEBUG] t:', translationFlat);
 
-  const R = rotationFlat.length >= 9
-    ? [
-      [rotationFlat[0], rotationFlat[1], rotationFlat[2]],
-      [rotationFlat[3], rotationFlat[4], rotationFlat[5]],
-      [rotationFlat[6], rotationFlat[7], rotationFlat[8]]
-    ]
-    : [];
-  const t = translationFlat.length >= 3
-    ? [translationFlat[0], translationFlat[1], translationFlat[2]]
-    : [];
+    if (rotationFlat.length === 9 && translationFlat.length === 3) {
+      R = [
+        [rotationFlat[0], rotationFlat[1], rotationFlat[2]],
+        [rotationFlat[3], rotationFlat[4], rotationFlat[5]],
+        [rotationFlat[6], rotationFlat[7], rotationFlat[8]]
+      ];
+      t = [translationFlat[0], translationFlat[1], translationFlat[2]];
+      rotationMat.delete();
+      translationMat.delete();
+      break;
+    }
 
-  rotationMat.delete();
-  translationMat.delete();
+    rotationMat.delete();
+    translationMat.delete();
+  }
+
+  if (R.length !== 3 || t.length !== 3) {
+    console.log('[POSE DEBUG] decomposition failed or returned empty result');
+  }
+
   h64.delete();
   K.delete();
   rotations.delete();
@@ -256,13 +408,15 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
     return emptyPose;
   }
 
-  const N = trackedPoints.length / 2;
+  const N = trackedPoints.length;
   if (N < 20) {
     return emptyPose;
   }
 
   let srcPts = null;
   let dstPts = null;
+  let srcPtsFallback = null;
+  let dstPtsFallback = null;
   let K = null;
   let mask = null;
   let E = null;
@@ -275,8 +429,9 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
   const cy = height / 2;
 
   try {
-    srcPts = cv.matFromArray(N, 1, cv.CV_32FC2, prevPoints);
-    dstPts = cv.matFromArray(N, 1, cv.CV_32FC2, trackedPoints);
+    // Primary format: Nx2 tends to be more reliable across mobile OpenCV.js builds.
+    srcPts = pointsToMatNx2(prevPoints, cv.CV_64F);
+    dstPts = pointsToMatNx2(trackedPoints, cv.CV_64F);
 
     K = cv.matFromArray(3, 3, cv.CV_64F, [
       fx, 0, cx,
@@ -285,17 +440,39 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
     ]);
 
     mask = new cv.Mat();
-    E = cv.findEssentialMat(
-      srcPts,
-      dstPts,
-      K,
-      cv.RANSAC,
-      0.999,
-      1.0,
-      mask
-    );
+    try {
+      E = cv.findEssentialMat(
+        srcPts,
+        dstPts,
+        K,
+        cv.RANSAC,
+        0.999,
+        1.0,
+        mask
+      );
+    } catch (primaryError) {
+      // Fallback format: Nx1 CV_32FC2 for builds that prefer 2-channel point mats.
+      srcPtsFallback = pointsToMatCv32FC2(prevPoints);
+      dstPtsFallback = pointsToMatCv32FC2(trackedPoints);
+      E = cv.findEssentialMat(
+        srcPtsFallback,
+        dstPtsFallback,
+        K,
+        cv.RANSAC,
+        0.999,
+        1.0,
+        mask
+      );
+      srcPts.delete();
+      dstPts.delete();
+      srcPts = srcPtsFallback;
+      dstPts = dstPtsFallback;
+      srcPtsFallback = null;
+      dstPtsFallback = null;
+    }
 
     if (!E || E.rows === 0 || E.cols === 0) {
+      console.log('Essential pose rejected: empty essential matrix');
       return emptyPose;
     }
 
@@ -314,6 +491,7 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
         mask
       );
     } catch (error) {
+      console.log('Essential pose rejected: recoverPose failed', error);
       return emptyPose;
     }
 
@@ -330,15 +508,6 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
     const translation = translationFlat.length >= 3
       ? [translationFlat[0], translationFlat[1], translationFlat[2]]
       : [];
-
-    if (translation.length === 3) {
-      const mag = Math.hypot(translation[0], translation[1], translation[2]);
-      if (mag > 1e-6) {
-        translation[0] /= mag;
-        translation[1] /= mag;
-        translation[2] /= mag;
-      }
-    }
 
     const confidence = N > 0 ? inliers / N : 0;
     const valid = (
@@ -366,16 +535,237 @@ function estimateEssentialPose(prevPoints, trackedPoints, width, height) {
       status: confidence > 0.6 ? 'stable' : 'unstable'
     };
   } catch (error) {
+    console.log('Essential pose rejected: pipeline failed', error);
     return emptyPose;
   } finally {
     if (srcPts) srcPts.delete();
     if (dstPts) dstPts.delete();
+    if (srcPtsFallback) srcPtsFallback.delete();
+    if (dstPtsFallback) dstPtsFallback.delete();
     if (K) K.delete();
     if (mask) mask.delete();
     if (E) E.delete();
     if (R) R.delete();
     if (t) t.delete();
   }
+}
+
+function createEmptyHomographyResult() {
+  return {
+    H: null,
+    inliers: 0,
+    confidence: 0,
+    status: 'unstable'
+  };
+}
+
+function createEmptyEssentialPose() {
+  return {
+    R: [],
+    t: [],
+    inliers: 0,
+    confidence: 0,
+    valid: false,
+    status: 'unstable'
+  };
+}
+
+function createIdentityPose() {
+  return {
+    R: [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1]
+    ],
+    t: [0, 0, 0],
+    valid: true
+  };
+}
+
+function clonePose(pose) {
+  if (!pose || !pose.valid) {
+    return createIdentityPose();
+  }
+  return {
+    R: pose.R.map((row) => row.slice()),
+    t: pose.t.slice(),
+    valid: true
+  };
+}
+
+function isPoseStructValid(pose) {
+  return (
+    pose &&
+    pose.valid === true &&
+    Array.isArray(pose.R) &&
+    pose.R.length === 3 &&
+    Array.isArray(pose.t) &&
+    pose.t.length === 3
+  );
+}
+
+function selectBestPose(homographyPose, essentialPose, currentTrackingState) {
+  if (
+    isPoseStructValid(homographyPose) &&
+    currentTrackingState === 'Tracking STABLE' &&
+    homographyPose.confidence > 0.6 &&
+    homographyPose.inliers > 25
+  ) {
+    return { pose: homographyPose, source: 'homography', confidence: homographyPose.confidence };
+  }
+
+  if (
+    isPoseStructValid(essentialPose) &&
+    essentialPose.inliers > 15 &&
+    essentialPose.confidence > 0.3
+  ) {
+    return { pose: essentialPose, source: 'essential', confidence: essentialPose.confidence };
+  }
+
+  if (lastValidPose && isPoseStructValid(lastValidPose)) {
+    return { pose: lastValidPose, source: 'fallback', confidence: 0 };
+  }
+
+  return { pose: createIdentityPose(), source: 'fallback', confidence: 0 };
+}
+
+function getPoseDelta(currentPose, previousPose) {
+  if (!isPoseStructValid(currentPose) || !isPoseStructValid(previousPose)) {
+    return { translationDelta: 0, rotationDelta: 0 };
+  }
+
+  const translationDelta = Math.hypot(
+    currentPose.t[0] - previousPose.t[0],
+    currentPose.t[1] - previousPose.t[1],
+    currentPose.t[2] - previousPose.t[2]
+  );
+
+  const currentR = [
+    currentPose.R[0][0], currentPose.R[0][1], currentPose.R[0][2],
+    currentPose.R[1][0], currentPose.R[1][1], currentPose.R[1][2],
+    currentPose.R[2][0], currentPose.R[2][1], currentPose.R[2][2]
+  ];
+  const prevR = [
+    previousPose.R[0][0], previousPose.R[0][1], previousPose.R[0][2],
+    previousPose.R[1][0], previousPose.R[1][1], previousPose.R[1][2],
+    previousPose.R[2][0], previousPose.R[2][1], previousPose.R[2][2]
+  ];
+  let rotationDeltaSq = 0;
+  for (let i = 0; i < 9; i++) {
+    const diff = currentR[i] - prevR[i];
+    rotationDeltaSq += diff * diff;
+  }
+
+  return {
+    translationDelta,
+    rotationDelta: Math.sqrt(rotationDeltaSq)
+  };
+}
+
+function computeHomographyWarpError(homography, prevPoints, currPoints) {
+  if (!homography || !homography.H || prevPoints.length === 0 || currPoints.length === 0) {
+    return 0;
+  }
+  const data = homography.H.data64F || homography.H.data32F;
+  if (!data || data.length < 9) {
+    return Infinity;
+  }
+
+  let errorSum = 0;
+  const count = Math.min(prevPoints.length, currPoints.length);
+  for (let i = 0; i < count; i++) {
+    const p = prevPoints[i];
+    const q = currPoints[i];
+    const w = (data[6] * p.x) + (data[7] * p.y) + data[8];
+    if (Math.abs(w) < 1e-6) {
+      continue;
+    }
+    const xWarp = ((data[0] * p.x) + (data[1] * p.y) + data[2]) / w;
+    const yWarp = ((data[3] * p.x) + (data[4] * p.y) + data[5]) / w;
+    errorSum += Math.hypot(xWarp - q.x, yWarp - q.y);
+  }
+
+  return count > 0 ? errorSum / count : 0;
+}
+
+function computeEssentialEpipolarError(pose, prevPoints, currPoints, width, height) {
+  if (!isPoseStructValid(pose) || prevPoints.length === 0 || currPoints.length === 0) {
+    return 0;
+  }
+
+  const focal = 0.9 * Math.max(width, height);
+  const fx = focal;
+  const fy = focal;
+  const cx = width / 2;
+  const cy = height / 2;
+  const invFx = 1 / fx;
+  const invFy = 1 / fy;
+
+  const t = pose.t;
+  const tx = [
+    [0, -t[2], t[1]],
+    [t[2], 0, -t[0]],
+    [-t[1], t[0], 0]
+  ];
+  const R = pose.R;
+  const E = [
+    [
+      tx[0][0] * R[0][0] + tx[0][1] * R[1][0] + tx[0][2] * R[2][0],
+      tx[0][0] * R[0][1] + tx[0][1] * R[1][1] + tx[0][2] * R[2][1],
+      tx[0][0] * R[0][2] + tx[0][1] * R[1][2] + tx[0][2] * R[2][2]
+    ],
+    [
+      tx[1][0] * R[0][0] + tx[1][1] * R[1][0] + tx[1][2] * R[2][0],
+      tx[1][0] * R[0][1] + tx[1][1] * R[1][1] + tx[1][2] * R[2][1],
+      tx[1][0] * R[0][2] + tx[1][1] * R[1][2] + tx[1][2] * R[2][2]
+    ],
+    [
+      tx[2][0] * R[0][0] + tx[2][1] * R[1][0] + tx[2][2] * R[2][0],
+      tx[2][0] * R[0][1] + tx[2][1] * R[1][1] + tx[2][2] * R[2][1],
+      tx[2][0] * R[0][2] + tx[2][1] * R[1][2] + tx[2][2] * R[2][2]
+    ]
+  ];
+
+  let errorSum = 0;
+  const count = Math.min(prevPoints.length, currPoints.length);
+  for (let i = 0; i < count; i++) {
+    const p = prevPoints[i];
+    const q = currPoints[i];
+    const x1 = [(p.x - cx) * invFx, (p.y - cy) * invFy, 1];
+    const x2 = [(q.x - cx) * invFx, (q.y - cy) * invFy, 1];
+
+    const line = [
+      E[0][0] * x1[0] + E[0][1] * x1[1] + E[0][2] * x1[2],
+      E[1][0] * x1[0] + E[1][1] * x1[1] + E[1][2] * x1[2],
+      E[2][0] * x1[0] + E[2][1] * x1[1] + E[2][2] * x1[2]
+    ];
+
+    const denom = Math.hypot(line[0], line[1]);
+    if (denom < 1e-9) {
+      continue;
+    }
+    const normDistance = Math.abs((line[0] * x2[0]) + (line[1] * x2[1]) + line[2]) / denom;
+    errorSum += normDistance * focal;
+  }
+
+  return count > 0 ? errorSum / count : 0;
+}
+
+function computeReprojectionError(pose, points2D, points2DNext, options = {}) {
+  const source = options.source || 'fallback';
+  if (source === 'homography') {
+    return computeHomographyWarpError(options.homography, points2D, points2DNext);
+  }
+  if (source === 'essential') {
+    return computeEssentialEpipolarError(
+      pose,
+      points2D,
+      points2DNext,
+      options.width || 1,
+      options.height || 1
+    );
+  }
+  return 0;
 }
 
 async function initTracking(video) {
@@ -393,30 +783,23 @@ function processTrackingFrame(canvas, options = {}) {
   const shouldForceRedetect = Boolean(options.forceRedetect);
 
   if (!videoRef || !cvReady || !window.cv) {
+    const fallbackPose = lastValidPose && isPoseStructValid(lastValidPose)
+      ? clonePose(lastValidPose)
+      : createIdentityPose();
     return {
       loading: true,
       trackedCount: 0,
       trackedPoints: [],
       prevPoints: [],
       status: 'Tracking LOST',
-      homography: {
-        H: null,
-        inliers: 0,
+      homography: createEmptyHomographyResult(),
+      pose: fallbackPose,
+      poseEssential: createEmptyEssentialPose(),
+      poseDebug: {
+        selectedSource: 'fallback',
         confidence: 0,
-        status: 'unstable'
-      },
-      pose: {
-        R: [],
-        t: [],
-        valid: false
-      },
-      poseEssential: {
-        R: [],
-        t: [],
-        inliers: 0,
-        confidence: 0,
-        valid: false,
-        status: 'unstable'
+        reprojectionError: 0,
+        wasClamped: false
       }
     };
   }
@@ -432,59 +815,39 @@ function processTrackingFrame(canvas, options = {}) {
     trackedPoints: [],
     prevPoints: [],
     status: 'Tracking LOST',
-    homography: {
-      H: null,
-      inliers: 0,
+    homography: createEmptyHomographyResult(),
+    pose: createIdentityPose(),
+    poseEssential: createEmptyEssentialPose(),
+    poseDebug: {
+      selectedSource: 'fallback',
       confidence: 0,
-      status: 'unstable'
-    },
-    pose: {
-      R: [],
-      t: [],
-      valid: false
-    },
-    poseEssential: {
-      R: [],
-      t: [],
-      inliers: 0,
-      confidence: 0,
-      valid: false,
-      status: 'unstable'
+      reprojectionError: 0,
+      wasClamped: false
     }
   };
 
   try {
-    let pointsToUse = prevPts;
-    let redetectedThisFrame = false;
-
     if (shouldForceRedetect) {
-      if (prevPts) {
-        prevPts.delete();
-        prevPts = null;
-      }
+      prevFramePts = [];
       if (prevGray) {
         prevGray.delete();
         prevGray = null;
       }
+      lostFrames = LOST_FRAME_THRESHOLD;
       console.log('Manual feature re-detection requested');
     }
 
+    const previousFramePoints = prevFramePts.map((p) => ({ x: p.x, y: p.y }));
+    let prevMatchedPoints = [];
+    let currMatchedPoints = [];
+    let nextFramePoints = [];
+
     // First frame or recovery path: detect strong corners to bootstrap tracking.
-    if (!prevGray || !prevPts || matPointCount(prevPts) < LOST_THRESHOLD) {
-      if (prevPts) {
-        prevPts.delete();
-      }
-      pointsToUse = detectFeatures(gray);
-      prevPts = pointsToUse;
-      redetectedThisFrame = true;
-      console.log(`Re-detected features: ${matPointCount(prevPts)}`);
-    }
-
-    let trackedCount = 0;
-    let trackedPoints = [];
-    let prevPoints = [];
-
-    if (!redetectedThisFrame && prevGray && pointsToUse && matPointCount(pointsToUse) > 0) {
+    if (!prevGray || previousFramePoints.length < LOST_THRESHOLD) {
+      nextFramePoints = detectFeatures(gray);
+      console.log(`Re-detected features: ${nextFramePoints.length}`);
+    } else {
+      const srcPtsMat = pointsToMatCv32FC2(previousFramePoints);
       const nextPts = new cv.Mat();
       const status = new cv.Mat();
       const err = new cv.Mat();
@@ -499,7 +862,7 @@ function processTrackingFrame(canvas, options = {}) {
       cv.calcOpticalFlowPyrLK(
         prevGray,
         gray,
-        pointsToUse,
+        srcPtsMat,
         nextPts,
         status,
         err,
@@ -508,59 +871,62 @@ function processTrackingFrame(canvas, options = {}) {
         criteria
       );
 
-      const statusCount = status.rows * status.cols;
+      const statusCount = Math.min(status.rows * status.cols, previousFramePoints.length);
+      const errData = err.data32F || err.data64F;
       for (let i = 0; i < statusCount; i++) {
-        if (status.data[i] === 1) {
-          const prevX = pointsToUse.data32F[i * 2];
-          const prevY = pointsToUse.data32F[i * 2 + 1];
-          const currX = nextPts.data32F[i * 2];
-          const currY = nextPts.data32F[i * 2 + 1];
-
-          prevPoints.push(prevX, prevY);
-          trackedPoints.push(currX, currY);
-          trackedCount += 1;
+        if (status.data[i] !== 1) {
+          continue;
         }
+
+        const prevPt = previousFramePoints[i];
+        const currX = nextPts.data32F[i * 2];
+        const currY = nextPts.data32F[i * 2 + 1];
+        const lkError = errData ? errData[i] : (typeof err.floatAt === 'function' ? err.floatAt(i, 0) : 0);
+
+        if (
+          !Number.isFinite(prevPt.x) ||
+          !Number.isFinite(prevPt.y) ||
+          !Number.isFinite(currX) ||
+          !Number.isFinite(currY) ||
+          !Number.isFinite(lkError) ||
+          lkError > MAX_LK_ERROR
+        ) {
+          continue;
+        }
+
+        prevMatchedPoints.push(prevPt);
+        currMatchedPoints.push({ x: currX, y: currY });
       }
 
-      if (prevPts) {
-        prevPts.delete();
-        prevPts = null;
-      }
+      nextFramePoints = currMatchedPoints.map((p) => ({ x: p.x, y: p.y }));
 
-      if (trackedCount > 0) {
-        prevPts = cv.matFromArray(trackedCount, 1, cv.CV_32FC2, trackedPoints);
-      }
-
+      srcPtsMat.delete();
       nextPts.delete();
       status.delete();
       err.delete();
-    } else if (pointsToUse && matPointCount(pointsToUse) > 0) {
-      trackedCount = matPointCount(pointsToUse);
-      trackedPoints = Array.from(pointsToUse.data32F);
     }
 
-    // If too few tracks survive, refresh features so tracking can recover.
+    let trackedCount = nextFramePoints.length;
     if (trackedCount < LOST_THRESHOLD) {
-      if (prevPts) {
-        prevPts.delete();
-      }
-      prevPts = detectFeatures(gray);
-      trackedCount = matPointCount(prevPts);
-      trackedPoints = Array.from(prevPts.data32F);
-      prevPoints = [];
-      console.log(`Re-detected features: ${matPointCount(prevPts)}`);
+      lostFrames += 1;
+    } else {
+      lostFrames = 0;
     }
 
-    replacePrevGray(gray);
-
-    let statusText = 'Tracking recovering...';
-    if (trackedCount < LOST_THRESHOLD) {
-      statusText = 'Tracking LOST';
-    } else if (trackedCount > OK_THRESHOLD) {
-      statusText = 'Tracking OK';
+    // Re-detect only after sustained loss to avoid anchor popping.
+    if (lostFrames >= LOST_FRAME_THRESHOLD) {
+      nextFramePoints = detectFeatures(gray);
+      trackedCount = nextFramePoints.length;
+      prevMatchedPoints = [];
+      currMatchedPoints = [];
+      lostFrames = 0;
+      console.log(`Re-detected features: ${trackedCount}`);
     }
 
-    const homographyEstimate = estimateHomography(prevPoints, trackedPoints);
+    const canEstimatePose = hasSufficientPoseInput(prevMatchedPoints, currMatchedPoints);
+    const homographyEstimate = canEstimatePose
+      ? estimateHomography(prevMatchedPoints, currMatchedPoints)
+      : createEmptyHomographyResult();
 
     // Keep one owned homography Mat alive to avoid leaking old frame results.
     if (lastHomography) {
@@ -568,7 +934,8 @@ function processTrackingFrame(canvas, options = {}) {
       lastHomography = null;
     }
     if (homographyEstimate.H) {
-      lastHomography = homographyEstimate.H;
+      lastHomography = homographyEstimate.H.clone();
+      homographyEstimate.H.delete();
       console.log(
         `Homography updated | inliers: ${homographyEstimate.inliers}, confidence: ${homographyEstimate.confidence.toFixed(2)}, status: ${homographyEstimate.status}`
       );
@@ -579,38 +946,128 @@ function processTrackingFrame(canvas, options = {}) {
       canvas.width,
       canvas.height
     );
-    const poseValidByStability = (
-      homographyEstimate.status === 'stable' && homographyEstimate.confidence > 0.6
-    );
-    const pose = {
+    const homographyPoseRaw = {
       R: poseEstimate.R,
       t: poseEstimate.t,
-      valid: poseEstimate.valid && poseValidByStability
+      valid: (
+        Array.isArray(poseEstimate.R) &&
+        poseEstimate.R.length === 3 &&
+        Array.isArray(poseEstimate.t) &&
+        poseEstimate.t.length === 3
+      ),
+      inliers: homographyEstimate.inliers,
+      confidence: homographyEstimate.confidence
     };
-    if (homographyEstimate.status === 'stable' && !pose.valid) {
+    const smoothedHomography = smoothPose(homographyPoseRaw, smoothedHomographyPose);
+    if (smoothedHomography.valid) {
+      smoothedHomographyPose = smoothedHomography;
+    } else {
+      smoothedHomographyPose = null;
+    }
+    if (homographyEstimate.H && !homographyPoseRaw.valid) {
       console.log('Pose decomposition unavailable for current stable homography');
     }
 
-    const essentialPose = estimateEssentialPose(
-      prevPoints,
-      trackedPoints,
-      canvas.width,
-      canvas.height
-    );
-    if (essentialPose.valid) {
+    const essentialRaw = canEstimatePose
+      ? estimateEssentialPose(
+        prevMatchedPoints,
+        currMatchedPoints,
+        canvas.width,
+        canvas.height
+      )
+      : createEmptyEssentialPose();
+    let essentialPose = essentialRaw;
+    if (essentialRaw.valid) {
+      const smoothedEssential = smoothPose(
+        { R: essentialRaw.R, t: essentialRaw.t, valid: true },
+        smoothedEssentialPose
+      );
+      smoothedEssentialPose = smoothedEssential;
+      essentialPose = {
+        ...essentialRaw,
+        R: smoothedEssential.R,
+        t: smoothedEssential.t
+      };
       console.log('Essential Pose:', {
         inliers: essentialPose.inliers,
         confidence: essentialPose.confidence.toFixed(2),
         t: essentialPose.t,
         valid: essentialPose.valid
       });
+    } else {
+      smoothedEssentialPose = null;
     }
+
+    const statusText = classifyTrackingStatus(trackedCount);
+
+    const homographyPoseCandidate = {
+      ...smoothedHomography,
+      inliers: homographyEstimate.inliers,
+      confidence: homographyEstimate.confidence
+    };
+    const selected = selectBestPose(
+      homographyPoseCandidate,
+      essentialPose,
+      statusText
+    );
+
+    let selectedPose = clonePose(selected.pose);
+    let selectedSource = selected.source;
+    let wasClamped = false;
+    let reprojectionError = computeReprojectionError(
+      selectedPose,
+      prevMatchedPoints,
+      currMatchedPoints,
+      {
+        source: selectedSource,
+        homography: { H: lastHomography },
+        width: canvas.width,
+        height: canvas.height
+      }
+    );
+
+    if (Number.isFinite(reprojectionError) && reprojectionError > MAX_REPROJECTION_ERROR) {
+      wasClamped = true;
+      selectedSource = 'fallback';
+      selectedPose = lastValidPose && isPoseStructValid(lastValidPose)
+        ? clonePose(lastValidPose)
+        : createIdentityPose();
+      reprojectionError = 0;
+    }
+
+    if (lastValidPose && isPoseStructValid(lastValidPose)) {
+      const poseDelta = getPoseDelta(selectedPose, lastValidPose);
+      if (
+        poseDelta.translationDelta > MAX_POSE_TRANSLATION_DELTA ||
+        poseDelta.rotationDelta > MAX_POSE_ROTATION_DELTA
+      ) {
+        wasClamped = true;
+        selectedSource = 'fallback';
+        selectedPose = clonePose(lastValidPose);
+      }
+    }
+
+    if (isPoseStructValid(selectedPose)) {
+      lastValidPose = clonePose(selectedPose);
+      lastPoseSource = selectedSource === 'fallback' ? (lastPoseSource || 'fallback') : selectedSource;
+    } else {
+      selectedSource = 'fallback';
+      selectedPose = lastValidPose && isPoseStructValid(lastValidPose)
+        ? clonePose(lastValidPose)
+        : createIdentityPose();
+      lastValidPose = clonePose(selectedPose);
+      lastPoseSource = lastPoseSource || 'fallback';
+    }
+
+    // Swap buffers only after the full frame processing and pose estimation.
+    prevFramePts = nextFramePoints.map((p) => ({ x: p.x, y: p.y }));
+    replacePrevGray(gray);
 
     trackedData = {
       loading: false,
       trackedCount,
-      trackedPoints,
-      prevPoints,
+      trackedPoints: pointsToFlatArray(nextFramePoints),
+      prevPoints: pointsToFlatArray(prevMatchedPoints),
       status: statusText,
       homography: {
         H: lastHomography,
@@ -618,8 +1075,14 @@ function processTrackingFrame(canvas, options = {}) {
         confidence: homographyEstimate.confidence,
         status: homographyEstimate.status
       },
-      pose,
-      poseEssential: essentialPose
+      pose: selectedPose,
+      poseEssential: essentialPose,
+      poseDebug: {
+        selectedSource,
+        confidence: selected.confidence,
+        reprojectionError,
+        wasClamped
+      }
     };
   } catch (cvError) {
     console.error('Frame tracking error:', cvError);
