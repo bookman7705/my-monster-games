@@ -17,7 +17,7 @@ const LOST_THRESHOLD = 20;
 const OK_THRESHOLD = 50;
 const STABLE_THRESHOLD = 80;
 const LOST_FRAME_THRESHOLD = 5;
-const MAX_LK_ERROR = 30;
+const MAX_LK_ERROR = 50;
 const MIN_POSE_POINTS = 20;
 const MIN_POINT_SPREAD = 30;
 const POSE_SMOOTH_ALPHA = 0.7;
@@ -77,6 +77,47 @@ function pointsToMatCv32FC2(points) {
 
 function matToPoints(pointsMat) {
   return flatArrayToPoints(matToFlatArray(pointsMat));
+}
+
+function getMatPointAt(pointsMat, index) {
+  const data32 = pointsMat.data32F;
+  if (data32 && data32.length >= (index * 2 + 2)) {
+    return { x: data32[index * 2], y: data32[index * 2 + 1] };
+  }
+
+  const data64 = pointsMat.data64F;
+  if (data64 && data64.length >= (index * 2 + 2)) {
+    return { x: data64[index * 2], y: data64[index * 2 + 1] };
+  }
+
+  if (typeof pointsMat.floatAt === 'function') {
+    return { x: pointsMat.floatAt(index, 0), y: pointsMat.floatAt(index, 1) };
+  }
+
+  if (typeof pointsMat.doubleAt === 'function') {
+    return { x: pointsMat.doubleAt(index, 0), y: pointsMat.doubleAt(index, 1) };
+  }
+
+  return { x: NaN, y: NaN };
+}
+
+function getMatScalarAt(mat, index) {
+  if (mat.data32F && mat.data32F.length > index) {
+    return mat.data32F[index];
+  }
+  if (mat.data64F && mat.data64F.length > index) {
+    return mat.data64F[index];
+  }
+  if (mat.data && mat.data.length > index) {
+    return mat.data[index];
+  }
+  if (typeof mat.floatAt === 'function') {
+    return mat.floatAt(index, 0);
+  }
+  if (typeof mat.doubleAt === 'function') {
+    return mat.doubleAt(index, 0);
+  }
+  return NaN;
 }
 
 function pointSpread(points) {
@@ -157,7 +198,7 @@ function smoothPose(nextPose, prevPose) {
 
 function classifyTrackingStatus(trackedCount) {
   if (trackingState === 'Tracking LOST') {
-    if (trackedCount > OK_THRESHOLD) {
+    if (trackedCount >= LOST_THRESHOLD) {
       trackingState = trackedCount > STABLE_THRESHOLD ? 'Tracking STABLE' : 'Tracking OK';
     }
   } else if (trackingState === 'Tracking STABLE') {
@@ -872,23 +913,24 @@ function processTrackingFrame(canvas, options = {}) {
       );
 
       const statusCount = Math.min(status.rows * status.cols, previousFramePoints.length);
-      const errData = err.data32F || err.data64F;
       for (let i = 0; i < statusCount; i++) {
-        if (status.data[i] !== 1) {
+        const st = getMatScalarAt(status, i);
+        if (st !== 1) {
           continue;
         }
 
         const prevPt = previousFramePoints[i];
-        const currX = nextPts.data32F[i * 2];
-        const currY = nextPts.data32F[i * 2 + 1];
-        const lkError = errData ? errData[i] : (typeof err.floatAt === 'function' ? err.floatAt(i, 0) : 0);
+        const currPt = getMatPointAt(nextPts, i);
+        const currX = currPt.x;
+        const currY = currPt.y;
+        const lkErrorValue = getMatScalarAt(err, i);
+        const lkError = Number.isFinite(lkErrorValue) ? lkErrorValue : 0;
 
         if (
           !Number.isFinite(prevPt.x) ||
           !Number.isFinite(prevPt.y) ||
           !Number.isFinite(currX) ||
           !Number.isFinite(currY) ||
-          !Number.isFinite(lkError) ||
           lkError > MAX_LK_ERROR
         ) {
           continue;
