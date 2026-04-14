@@ -157,6 +157,14 @@ function detectFeatures(gray) {
   return corners;
 }
 
+function matPointCount(pointsMat) {
+  if (!pointsMat || typeof pointsMat.rows !== 'number' || typeof pointsMat.cols !== 'number') {
+    return 0;
+  }
+  // OpenCV.js may return point vectors as Nx1 or 1xN; both represent N points.
+  return pointsMat.rows * pointsMat.cols;
+}
+
 function replacePrevGray(currentGray) {
   if (prevGray) {
     prevGray.delete();
@@ -210,139 +218,148 @@ function processFrame() {
     const gray = new cv.Mat();
     cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
 
-    let pointsToUse = prevPts;
-    let redetectedThisFrame = false;
+    try {
+      let pointsToUse = prevPts;
+      let redetectedThisFrame = false;
 
-    if (forceRedetectRequested) {
-      if (prevPts) {
-        prevPts.delete();
-        prevPts = null;
+      if (forceRedetectRequested) {
+        if (prevPts) {
+          prevPts.delete();
+          prevPts = null;
+        }
+        if (prevGray) {
+          prevGray.delete();
+          prevGray = null;
+        }
+        forceRedetectRequested = false;
+        console.log('Manual feature re-detection requested');
       }
-      if (prevGray) {
-        prevGray.delete();
-        prevGray = null;
+
+      // First frame or recovery path: detect strong corners to bootstrap tracking.
+      if (!prevGray || !prevPts || matPointCount(prevPts) < LOST_THRESHOLD) {
+        if (prevPts) {
+          prevPts.delete();
+        }
+        pointsToUse = detectFeatures(gray);
+        prevPts = pointsToUse;
+        redetectedThisFrame = true;
+        console.log(`Re-detected features: ${matPointCount(prevPts)}`);
       }
-      forceRedetectRequested = false;
-      console.log('Manual feature re-detection requested');
-    }
 
-    // First frame or recovery path: detect strong corners to bootstrap tracking.
-    if (!prevGray || !prevPts || prevPts.rows < LOST_THRESHOLD) {
-      if (prevPts) {
-        prevPts.delete();
+      let trackedCount = 0;
+      let trackedPoints = [];
+      let prevPoints = [];
+
+      if (!redetectedThisFrame && prevGray && pointsToUse && matPointCount(pointsToUse) > 0) {
+        const nextPts = new cv.Mat();
+        const status = new cv.Mat();
+        const err = new cv.Mat();
+        const winSize = new cv.Size(21, 21);
+        const criteria = new cv.TermCriteria(
+          cv.TermCriteria_EPS + cv.TermCriteria_COUNT,
+          30,
+          0.01
+        );
+
+        // Lucas-Kanade optical flow links feature positions frame-to-frame.
+        cv.calcOpticalFlowPyrLK(
+          prevGray,
+          gray,
+          pointsToUse,
+          nextPts,
+          status,
+          err,
+          winSize,
+          3,
+          criteria
+        );
+
+        const statusCount = status.rows * status.cols;
+        for (let i = 0; i < statusCount; i++) {
+          if (status.data[i] === 1) {
+            const prevX = pointsToUse.data32F[i * 2];
+            const prevY = pointsToUse.data32F[i * 2 + 1];
+            const currX = nextPts.data32F[i * 2];
+            const currY = nextPts.data32F[i * 2 + 1];
+
+            prevPoints.push(prevX, prevY);
+            trackedPoints.push(currX, currY);
+            trackedCount += 1;
+          }
+        }
+
+        if (prevPts) {
+          prevPts.delete();
+          prevPts = null;
+        }
+
+        if (trackedCount > 0) {
+          prevPts = cv.matFromArray(trackedCount, 1, cv.CV_32FC2, trackedPoints);
+        }
+
+        nextPts.delete();
+        status.delete();
+        err.delete();
+      } else if (pointsToUse && matPointCount(pointsToUse) > 0) {
+        trackedCount = matPointCount(pointsToUse);
+        trackedPoints = Array.from(pointsToUse.data32F);
       }
-      pointsToUse = detectFeatures(gray);
-      prevPts = pointsToUse;
-      redetectedThisFrame = true;
-      console.log(`Re-detected features: ${prevPts.rows}`);
-    }
 
-    let trackedCount = 0;
-    let trackedPoints = [];
-    let prevPoints = [];
+      // Draw tracked landmarks and motion vectors for visual verification.
+      if (debugDrawEnabled) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#ff4d4d'; // red motion vectors
+        ctx.fillStyle = '#4dff4d'; // green tracked points
 
-    if (!redetectedThisFrame && prevGray && pointsToUse && pointsToUse.rows > 0) {
-      const nextPts = new cv.Mat();
-      const status = new cv.Mat();
-      const err = new cv.Mat();
-      const winSize = new cv.Size(21, 21);
-      const criteria = new cv.TermCriteria(
-        cv.TermCriteria_EPS + cv.TermCriteria_COUNT,
-        30,
-        0.01
-      );
+        if (prevPoints.length > 0) {
+          for (let i = 0; i < trackedCount; i++) {
+            const px = prevPoints[i * 2];
+            const py = prevPoints[i * 2 + 1];
+            const cx = trackedPoints[i * 2];
+            const cy = trackedPoints[i * 2 + 1];
 
-      // Lucas-Kanade optical flow links feature positions frame-to-frame.
-      cv.calcOpticalFlowPyrLK(
-        prevGray,
-        gray,
-        pointsToUse,
-        nextPts,
-        status,
-        err,
-        winSize,
-        3,
-        criteria
-      );
+            ctx.beginPath();
+            ctx.moveTo(px, py);
+            ctx.lineTo(cx, cy);
+            ctx.stroke();
 
-      for (let i = 0; i < status.rows; i++) {
-        if (status.data[i] === 1) {
-          const prevX = pointsToUse.data32F[i * 2];
-          const prevY = pointsToUse.data32F[i * 2 + 1];
-          const currX = nextPts.data32F[i * 2];
-          const currY = nextPts.data32F[i * 2 + 1];
-
-          prevPoints.push(prevX, prevY);
-          trackedPoints.push(currX, currY);
-          trackedCount += 1;
+            ctx.beginPath();
+            ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#111';
+            ctx.stroke();
+            ctx.strokeStyle = '#ff4d4d';
+          }
+        } else {
+          for (let i = 0; i < trackedCount; i++) {
+            const cx = trackedPoints[i * 2];
+            const cy = trackedPoints[i * 2 + 1];
+            ctx.beginPath();
+            ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#111';
+            ctx.stroke();
+            ctx.strokeStyle = '#ff4d4d';
+          }
         }
       }
 
-      if (prevPts) {
-        prevPts.delete();
-        prevPts = null;
-      }
+      updateHud(trackedCount);
 
-      if (trackedCount > 0) {
-        prevPts = cv.matFromArray(trackedCount, 1, cv.CV_32FC2, trackedPoints);
-      }
-
-      nextPts.delete();
-      status.delete();
-      err.delete();
-      winSize.delete();
-      criteria.delete();
-    } else if (pointsToUse && pointsToUse.rows > 0) {
-      trackedCount = pointsToUse.rows;
-      trackedPoints = Array.from(pointsToUse.data32F);
-    }
-
-    // Draw tracked landmarks and motion vectors for visual verification.
-    if (debugDrawEnabled) {
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = '#ff4d4d'; // red motion vectors
-      ctx.fillStyle = '#4dff4d'; // green tracked points
-
-      if (prevPoints.length > 0) {
-        for (let i = 0; i < trackedCount; i++) {
-          const px = prevPoints[i * 2];
-          const py = prevPoints[i * 2 + 1];
-          const cx = trackedPoints[i * 2];
-          const cy = trackedPoints[i * 2 + 1];
-
-          ctx.beginPath();
-          ctx.moveTo(px, py);
-          ctx.lineTo(cx, cy);
-          ctx.stroke();
-
-          ctx.beginPath();
-          ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-          ctx.fill();
+      // If too few tracks survive, refresh features so tracking can recover.
+      if (trackedCount < LOST_THRESHOLD) {
+        if (prevPts) {
+          prevPts.delete();
         }
-      } else {
-        for (let i = 0; i < trackedCount; i++) {
-          const cx = trackedPoints[i * 2];
-          const cy = trackedPoints[i * 2 + 1];
-          ctx.beginPath();
-          ctx.arc(cx, cy, 3, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        prevPts = detectFeatures(gray);
+        updateHud(matPointCount(prevPts));
+        console.log(`Re-detected features: ${matPointCount(prevPts)}`);
       }
+
+      replacePrevGray(gray);
+    } catch (cvError) {
+      console.error('Frame tracking error:', cvError);
     }
-
-    updateHud(trackedCount);
-
-    // If too few tracks survive, refresh features so tracking can recover.
-    if (trackedCount < LOST_THRESHOLD) {
-      if (prevPts) {
-        prevPts.delete();
-      }
-      prevPts = detectFeatures(gray);
-      updateHud(prevPts.rows);
-      console.log(`Re-detected features: ${prevPts.rows}`);
-    }
-
-    replacePrevGray(gray);
 
     rgba.delete();
     gray.delete();
