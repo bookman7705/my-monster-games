@@ -14,6 +14,14 @@ const ctx = canvas.getContext('2d');
 
 let loopStarted = false;
 
+function startRenderLoop() {
+  if (loopStarted) {
+    return;
+  }
+  loopStarted = true;
+  processFrame();
+}
+
 function processFrame() {
   const video = getVideo();
   if (!video) {
@@ -53,13 +61,15 @@ async function initApp() {
     return;
   }
 
-  video.addEventListener('play', () => {
-    if (loopStarted) {
-      return;
-    }
-    loopStarted = true;
-    processFrame();
-  });
+  // Mobile browsers can fire play before listeners are attached, so we use
+  // multiple readiness hooks and an immediate readyState check.
+  video.addEventListener('play', startRenderLoop);
+  video.addEventListener('playing', startRenderLoop);
+  video.addEventListener('loadeddata', startRenderLoop);
+
+  if (video.readyState >= video.HAVE_CURRENT_DATA) {
+    startRenderLoop();
+  }
 }
 
 initApp().catch((error) => {
