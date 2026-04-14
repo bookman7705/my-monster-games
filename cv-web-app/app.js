@@ -40,7 +40,7 @@ hud.style.pointerEvents = 'none';
 
 helpText.style.opacity = '0.8';
 helpText.style.fontSize = '12px';
-helpText.textContent = 'Mobile controls enabled (keyboard "d" also works)';
+helpText.textContent = 'Use the buttons below for debug controls';
 
 controls.style.position = 'fixed';
 controls.style.left = '12px';
