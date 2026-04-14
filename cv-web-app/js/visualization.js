@@ -225,17 +225,25 @@ function drawHomographyInfoPanel(ctx, trackingData) {
 }
 
 function drawPoseInfoPanel(ctx, trackingData) {
-  const pose = trackingData.pose || { R: [], t: [], valid: false };
+  const pose = trackingData.poseEssential || {
+    R: [],
+    t: [],
+    valid: false,
+    inliers: 0,
+    confidence: 0
+  };
   const t = pose.t || [];
   const tx = Number.isFinite(t[0]) ? t[0] : 0;
   const ty = Number.isFinite(t[1]) ? t[1] : 0;
   const tz = Number.isFinite(t[2]) ? t[2] : 0;
+  const inliers = Number.isFinite(pose.inliers) ? pose.inliers : 0;
+  const confidence = Number.isFinite(pose.confidence) ? pose.confidence : 0;
   const rot = getApproxRotationDegrees(pose.R);
 
   const panelX = 12;
   const panelY = 206;
   const panelWidth = 250;
-  const panelHeight = 138;
+  const panelHeight = 174;
 
   ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
   ctx.fillRect(panelX, panelY, panelWidth, panelHeight);
@@ -250,7 +258,9 @@ function drawPoseInfoPanel(ctx, trackingData) {
   ctx.fillText(`Tx: ${tx.toFixed(3)}`, panelX + 10, panelY + 74);
   ctx.fillText(`Ty: ${ty.toFixed(3)}`, panelX + 10, panelY + 92);
   ctx.fillText(`Tz: ${tz.toFixed(3)}`, panelX + 10, panelY + 110);
-  ctx.fillText(`Rot: ${rot.rx.toFixed(1)}, ${rot.ry.toFixed(1)}, ${rot.rz.toFixed(1)}`, panelX + 10, panelY + 128);
+  ctx.fillText(`Inliers: ${inliers}`, panelX + 10, panelY + 128);
+  ctx.fillText(`Confidence: ${confidence.toFixed(2)}`, panelX + 10, panelY + 146);
+  ctx.fillText(`Rot: ${rot.rx.toFixed(1)}, ${rot.ry.toFixed(1)}, ${rot.rz.toFixed(1)}`, panelX + 10, panelY + 164);
 }
 
 function drawTracking(ctx, trackingData, debugEnabled, homographyDebugEnabled = true) {
@@ -269,14 +279,17 @@ function drawTracking(ctx, trackingData, debugEnabled, homographyDebugEnabled = 
     drawHomographyBackground(ctx, trackingData);
     drawHomographyInfoPanel(ctx, trackingData);
     drawPoseInfoPanel(ctx, trackingData);
-    const pose = trackingData.pose || { valid: false };
+    const pose = trackingData.poseEssential || { valid: false };
     if (pose.valid) {
       drawWorldAxes(ctx, pose);
       drawPoseMotionArrow(ctx, pose);
-    } else {
-      ctx.fillStyle = '#ff6b6b';
+      ctx.fillStyle = '#00ffcc';
       ctx.font = '16px sans-serif';
-      ctx.fillText('Pose invalid', 12, 362);
+      ctx.fillText('ESSENTIAL POSE ACTIVE', 12, 380);
+    } else {
+      ctx.fillStyle = '#ff4444';
+      ctx.font = '16px sans-serif';
+      ctx.fillText('ESSENTIAL POSE LOST', 12, 380);
     }
   }
 
