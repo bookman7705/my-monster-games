@@ -1,37 +1,108 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Water Test</title>
+  <meta charset="UTF-8" />
+  <title>Three.js Cube on Checkerboard</title>
   <style>
     body { margin: 0; overflow: hidden; }
-    canvas { display: block; }
   </style>
 </head>
 <body>
-  <script type="module">
-    import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-    import { Water } from './water.js'; // THIS MUST BE YOUR water.js file
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+  // Scene
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x202020);
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
-    const renderer = new THREE.WebGLRenderer({antialias: true});
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
+  // Camera
+  const camera = new THREE.PerspectiveCamera(
+    75,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
+  );
+  camera.position.set(5, 5, 5);
+  camera.lookAt(0, 0, 0);
 
-    const geometry = new THREE.PlaneGeometry(10, 10);
-    const water = new Water(geometry, { textureWidth: 256, textureHeight: 256 });
-    scene.add(water);
+  // Renderer
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
 
-    camera.position.set(0, 5, 10);
-    camera.lookAt(0, 0, 0);
+  // Lights
+  const light = new THREE.DirectionalLight(0xffffff, 1);
+  light.position.set(5, 10, 7);
+  scene.add(light);
 
-    function animate() {
-      requestAnimationFrame(animate);
-      water.material.uniforms['time'].value += 0.01; // animate water
-      renderer.render(scene, camera);
+  const ambient = new THREE.AmbientLight(0x404040);
+  scene.add(ambient);
+
+  // Checkerboard texture (procedural)
+  function createCheckerTexture(size = 512, squares = 8) {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    const squareSize = size / squares;
+
+    for (let y = 0; y < squares; y++) {
+      for (let x = 0; x < squares; x++) {
+        ctx.fillStyle = (x + y) % 2 === 0 ? '#ffffff' : '#444444';
+        ctx.fillRect(x * squareSize, y * squareSize, squareSize, squareSize);
+      }
     }
 
-    animate();
-  </script>
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(20, 20); // tile across ground
+    return texture;
+  }
+
+  // Ground
+  const groundGeometry = new THREE.PlaneGeometry(50, 50);
+  const groundMaterial = new THREE.MeshStandardMaterial({
+    map: createCheckerTexture(),
+    side: THREE.DoubleSide
+  });
+
+  const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  // Cube with different colored faces
+  const geometry = new THREE.BoxGeometry(1, 1, 1);
+
+  const materials = [
+    new THREE.MeshStandardMaterial({ color: 0xff0000 }), // right
+    new THREE.MeshStandardMaterial({ color: 0x00ff00 }), // left
+    new THREE.MeshStandardMaterial({ color: 0x0000ff }), // top
+    new THREE.MeshStandardMaterial({ color: 0xffff00 }), // bottom
+    new THREE.MeshStandardMaterial({ color: 0xff00ff }), // front
+    new THREE.MeshStandardMaterial({ color: 0x00ffff })  // back
+  ];
+
+  const cube = new THREE.Mesh(geometry, materials);
+  cube.position.y = 0.5; // sit on ground
+  scene.add(cube);
+
+  // Simple animation
+  function animate() {
+    requestAnimationFrame(animate);
+
+    cube.rotation.x += 0.01;
+    cube.rotation.y += 0.01;
+
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  // Resize handling
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+</script>
 </body>
 </html>
