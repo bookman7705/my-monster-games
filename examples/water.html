@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Three.js Mobile Look + Movement</title>
+<title>Three.js Mobile Look + Movement + Sliding Collision</title>
 <style>
   body { margin: 0; overflow: hidden; }
 
@@ -55,6 +55,8 @@ scene.background = new THREE.Color(0x202020);
 
 // Camera
 const cameraHeight = 1.6;
+const cameraRadius = 0.3; // collision size
+
 const camera = new THREE.PerspectiveCamera(
   75,
   window.innerWidth / window.innerHeight,
@@ -63,15 +65,9 @@ const camera = new THREE.PerspectiveCamera(
 );
 camera.position.set(0, cameraHeight, 5);
 
-// Rotation state
-let yaw = 0;
-let pitch = 0;
-
-// Smoothed values
-let smoothYaw = 0;
-let smoothPitch = 0;
-
-// Calibration
+// Rotation
+let yaw = 0, pitch = 0;
+let smoothYaw = 0, smoothPitch = 0;
 let baseAlpha = null;
 
 // Renderer
@@ -83,57 +79,53 @@ document.body.appendChild(renderer.domElement);
 scene.add(new THREE.DirectionalLight(0xffffff, 1).position.set(5,10,7));
 scene.add(new THREE.AmbientLight(0x404040));
 
-// Checkerboard
-function createCheckerTexture(size = 512, squares = 8) {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const s = size / squares;
-
-  for (let y=0;y<squares;y++){
-    for (let x=0;x<squares;x++){
-      ctx.fillStyle = (x+y)%2===0 ? '#fff' : '#444';
+// Ground
+function createCheckerTexture(size=512,squares=8){
+  const c=document.createElement('canvas');
+  c.width=c.height=size;
+  const ctx=c.getContext('2d');
+  const s=size/squares;
+  for(let y=0;y<squares;y++){
+    for(let x=0;x<squares;x++){
+      ctx.fillStyle=(x+y)%2===0?'#fff':'#444';
       ctx.fillRect(x*s,y*s,s,s);
     }
   }
-
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  const tex=new THREE.CanvasTexture(c);
+  tex.wrapS=tex.wrapT=THREE.RepeatWrapping;
   tex.repeat.set(20,20);
   return tex;
 }
 
-// Ground
 const ground = new THREE.Mesh(
   new THREE.PlaneGeometry(50,50),
-  new THREE.MeshStandardMaterial({
-    map: createCheckerTexture(),
-    side: THREE.DoubleSide
-  })
+  new THREE.MeshStandardMaterial({ map:createCheckerTexture(), side:THREE.DoubleSide })
 );
 ground.rotation.x = -Math.PI/2;
 scene.add(ground);
 
-// Cube (idle)
+// Cube
 const cube = new THREE.Mesh(
   new THREE.BoxGeometry(1,1,1),
   new THREE.MeshStandardMaterial({ color: 0x00ffff })
 );
-cube.position.y = 0.5;
+cube.position.set(0,0.5,0);
 scene.add(cube);
 
-// Movement
+// Precompute cube AABB (2D)
+const cubeMin = new THREE.Vector2(-0.5, -0.5);
+const cubeMax = new THREE.Vector2( 0.5,  0.5);
+
+// Movement input
 const move = { forward:false, back:false, left:false, right:false };
 
-function bindButton(id, key){
-  const el = document.getElementById(id);
-
-  el.addEventListener('touchstart', ()=> move[key]=true);
-  el.addEventListener('touchend', ()=> move[key]=false);
-
-  el.addEventListener('mousedown', ()=> move[key]=true);
-  el.addEventListener('mouseup', ()=> move[key]=false);
-  el.addEventListener('mouseleave', ()=> move[key]=false);
+function bindButton(id,key){
+  const el=document.getElementById(id);
+  el.addEventListener('touchstart',()=>move[key]=true);
+  el.addEventListener('touchend',()=>move[key]=false);
+  el.addEventListener('mousedown',()=>move[key]=true);
+  el.addEventListener('mouseup',()=>move[key]=false);
+  el.addEventListener('mouseleave',()=>move[key]=false);
 }
 
 bindButton('forward','forward');
@@ -141,10 +133,62 @@ bindButton('back','back');
 bindButton('left','left');
 bindButton('right','right');
 
+// Movement vectors
 const speed = 0.08;
 const forwardVec = new THREE.Vector3();
 const rightVec = new THREE.Vector3();
 
+// --- COLLISION HELPERS ---
+
+function getCameraXZ(pos){
+  return new THREE.Vector2(pos.x, pos.z);
+}
+
+function clamp(v, min, max){
+  return Math.max(min, Math.min(max, v));
+}
+
+function collideAndSlide(startPos, moveVec){
+  let newPos = startPos.clone().add(moveVec);
+
+  const pos2D = getCameraXZ(newPos);
+
+  // Closest point on cube
+  const closest = new THREE.Vector2(
+    clamp(pos2D.x, cubeMin.x, cubeMax.x),
+    clamp(pos2D.y, cubeMin.y, cubeMax.y)
+  );
+
+  const diff = pos2D.clone().sub(closest);
+  const dist = diff.length();
+
+  if (dist < cameraRadius) {
+    // Collision normal
+    const normal = diff.normalize();
+
+    // Remove movement into wall
+    const move2D = new THREE.Vector2(moveVec.x, moveVec.z);
+    const dot = move2D.dot(normal);
+
+    if (dot < 0) {
+      // Slide: subtract inward component
+      const slide = move2D.clone().sub(normal.multiplyScalar(dot));
+
+      newPos.x = startPos.x + slide.x;
+      newPos.z = startPos.z + slide.y;
+    } else {
+      // Just push out slightly
+      const push = normal.multiplyScalar(cameraRadius - dist);
+      newPos.x += push.x;
+      newPos.z += push.y;
+    }
+  }
+
+  newPos.y = cameraHeight;
+  return newPos;
+}
+
+// Movement update
 function updateMovement(){
   camera.getWorldDirection(forwardVec);
   forwardVec.y = 0;
@@ -152,10 +196,19 @@ function updateMovement(){
 
   rightVec.crossVectors(forwardVec, new THREE.Vector3(0,1,0)).normalize();
 
-  if(move.forward) camera.position.addScaledVector(forwardVec, speed);
-  if(move.back)    camera.position.addScaledVector(forwardVec, -speed);
-  if(move.right)   camera.position.addScaledVector(rightVec, speed);
-  if(move.left)    camera.position.addScaledVector(rightVec, -speed);
+  const moveVec = new THREE.Vector3();
+
+  if(move.forward) moveVec.add(forwardVec);
+  if(move.back)    moveVec.addScaledVector(forwardVec, -1);
+  if(move.right)   moveVec.add(rightVec);
+  if(move.left)    moveVec.addScaledVector(rightVec, -1);
+
+  if(moveVec.lengthSq() > 0){
+    moveVec.normalize().multiplyScalar(speed);
+
+    const newPos = collideAndSlide(camera.position, moveVec);
+    camera.position.copy(newPos);
+  }
 
   camera.position.y = cameraHeight;
 }
@@ -168,33 +221,29 @@ function handleOrientation(e){
     baseAlpha = e.alpha;
   }
 
-  // Yaw (relative)
   yaw = THREE.MathUtils.degToRad(e.alpha - baseAlpha);
-
-  // Pitch (tilt)
   pitch = THREE.MathUtils.degToRad(e.beta - 90);
 
-  // Clamp pitch
   pitch = Math.max(-Math.PI/3, Math.min(Math.PI/3, pitch));
 }
 
-// Enable button (required on iOS)
-document.getElementById('startBtn').onclick = async () => {
-  if (typeof DeviceOrientationEvent.requestPermission === 'function') {
-    const permission = await DeviceOrientationEvent.requestPermission();
-    if (permission !== 'granted') return;
+// Enable
+document.getElementById('startBtn').onclick = async ()=>{
+  if(typeof DeviceOrientationEvent.requestPermission === 'function'){
+    const p = await DeviceOrientationEvent.requestPermission();
+    if(p !== 'granted') return;
   }
 
   window.addEventListener('deviceorientation', handleOrientation);
   document.getElementById('startBtn').style.display = 'none';
 };
 
-// Smoothing factor (lower = smoother)
+// Smooth rotation
 const smoothing = 0.1;
 
 function updateCameraRotation(){
-  smoothYaw += (yaw - smoothYaw) * smoothing;
-  smoothPitch += (pitch - smoothPitch) * smoothing;
+  smoothYaw += (yaw - smoothYaw)*smoothing;
+  smoothPitch += (pitch - smoothPitch)*smoothing;
 
   camera.rotation.order = "YXZ";
   camera.rotation.y = smoothYaw;
