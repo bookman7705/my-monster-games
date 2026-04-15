@@ -2,11 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Three.js Mobile Movement</title>
+<title>Three.js Mobile Look + Movement</title>
 <style>
   body { margin: 0; overflow: hidden; }
 
-  /* Mobile controls */
   #controls {
     position: absolute;
     bottom: 20px;
@@ -15,8 +14,6 @@
     display: grid;
     grid-template-columns: 60px 60px 60px;
     grid-gap: 10px;
-    justify-items: center;
-    align-items: center;
   }
 
   button {
@@ -30,9 +27,19 @@
   #left    { grid-column: 1; grid-row: 2; }
   #back    { grid-column: 2; grid-row: 2; }
   #right   { grid-column: 3; grid-row: 2; }
+
+  #startBtn {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    padding: 10px;
+    background: white;
+  }
 </style>
 </head>
 <body>
+
+<button id="startBtn">Enable Look</button>
 
 <div id="controls">
   <button id="forward">↑</button>
@@ -56,16 +63,24 @@ const camera = new THREE.PerspectiveCamera(
 );
 camera.position.set(0, cameraHeight, 5);
 
+// Rotation state
+let yaw = 0;
+let pitch = 0;
+
+// Smoothed values
+let smoothYaw = 0;
+let smoothPitch = 0;
+
+// Calibration
+let baseAlpha = null;
+
 // Renderer
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 document.body.appendChild(renderer.domElement);
 
 // Lights
-const light = new THREE.DirectionalLight(0xffffff, 1);
-light.position.set(5, 10, 7);
-scene.add(light);
-
+scene.add(new THREE.DirectionalLight(0xffffff, 1).position.set(5,10,7));
 scene.add(new THREE.AmbientLight(0x404040));
 
 // Checkerboard
@@ -73,103 +88,124 @@ function createCheckerTexture(size = 512, squares = 8) {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = size;
   const ctx = canvas.getContext('2d');
-  const squareSize = size / squares;
+  const s = size / squares;
 
-  for (let y = 0; y < squares; y++) {
-    for (let x = 0; x < squares; x++) {
-      ctx.fillStyle = (x + y) % 2 === 0 ? '#fff' : '#444';
-      ctx.fillRect(x * squareSize, y * squareSize, squareSize, squareSize);
+  for (let y=0;y<squares;y++){
+    for (let x=0;x<squares;x++){
+      ctx.fillStyle = (x+y)%2===0 ? '#fff' : '#444';
+      ctx.fillRect(x*s,y*s,s,s);
     }
   }
 
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(20, 20);
-  return texture;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(20,20);
+  return tex;
 }
 
 // Ground
 const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(50, 50),
+  new THREE.PlaneGeometry(50,50),
   new THREE.MeshStandardMaterial({
     map: createCheckerTexture(),
     side: THREE.DoubleSide
   })
 );
-ground.rotation.x = -Math.PI / 2;
+ground.rotation.x = -Math.PI/2;
 scene.add(ground);
 
-// Cube (NO ROTATION)
+// Cube (idle)
 const cube = new THREE.Mesh(
-  new THREE.BoxGeometry(1, 1, 1),
-  [
-    new THREE.MeshStandardMaterial({ color: 0xff0000 }),
-    new THREE.MeshStandardMaterial({ color: 0x00ff00 }),
-    new THREE.MeshStandardMaterial({ color: 0x0000ff }),
-    new THREE.MeshStandardMaterial({ color: 0xffff00 }),
-    new THREE.MeshStandardMaterial({ color: 0xff00ff }),
-    new THREE.MeshStandardMaterial({ color: 0x00ffff })
-  ]
+  new THREE.BoxGeometry(1,1,1),
+  new THREE.MeshStandardMaterial({ color: 0x00ffff })
 );
 cube.position.y = 0.5;
 scene.add(cube);
 
-// Movement state
-const move = {
-  forward: false,
-  back: false,
-  left: false,
-  right: false
-};
+// Movement
+const move = { forward:false, back:false, left:false, right:false };
 
-// Button handlers
-function bindButton(id, key) {
+function bindButton(id, key){
   const el = document.getElementById(id);
 
-  el.addEventListener('touchstart', () => move[key] = true);
-  el.addEventListener('touchend', () => move[key] = false);
+  el.addEventListener('touchstart', ()=> move[key]=true);
+  el.addEventListener('touchend', ()=> move[key]=false);
 
-  el.addEventListener('mousedown', () => move[key] = true);
-  el.addEventListener('mouseup', () => move[key] = false);
-  el.addEventListener('mouseleave', () => move[key] = false);
+  el.addEventListener('mousedown', ()=> move[key]=true);
+  el.addEventListener('mouseup', ()=> move[key]=false);
+  el.addEventListener('mouseleave', ()=> move[key]=false);
 }
 
-bindButton('forward', 'forward');
-bindButton('back', 'back');
-bindButton('left', 'left');
-bindButton('right', 'right');
+bindButton('forward','forward');
+bindButton('back','back');
+bindButton('left','left');
+bindButton('right','right');
 
-// Movement config
 const speed = 0.08;
-
-// Temp vectors
 const forwardVec = new THREE.Vector3();
 const rightVec = new THREE.Vector3();
 
-function updateMovement() {
-  // Get camera forward direction
+function updateMovement(){
   camera.getWorldDirection(forwardVec);
-
-  // Flatten (ground movement only)
   forwardVec.y = 0;
   forwardVec.normalize();
 
-  // Right vector
-  rightVec.crossVectors(forwardVec, new THREE.Vector3(0, 1, 0)).normalize();
+  rightVec.crossVectors(forwardVec, new THREE.Vector3(0,1,0)).normalize();
 
-  if (move.forward) camera.position.addScaledVector(forwardVec, speed);
-  if (move.back)    camera.position.addScaledVector(forwardVec, -speed);
-  if (move.right)   camera.position.addScaledVector(rightVec, speed);
-  if (move.left)    camera.position.addScaledVector(rightVec, -speed);
+  if(move.forward) camera.position.addScaledVector(forwardVec, speed);
+  if(move.back)    camera.position.addScaledVector(forwardVec, -speed);
+  if(move.right)   camera.position.addScaledVector(rightVec, speed);
+  if(move.left)    camera.position.addScaledVector(rightVec, -speed);
 
-  // Keep camera grounded
   camera.position.y = cameraHeight;
 }
 
+// Device orientation
+function handleOrientation(e){
+  if(e.alpha === null) return;
+
+  if(baseAlpha === null){
+    baseAlpha = e.alpha;
+  }
+
+  // Yaw (relative)
+  yaw = THREE.MathUtils.degToRad(e.alpha - baseAlpha);
+
+  // Pitch (tilt)
+  pitch = THREE.MathUtils.degToRad(e.beta);
+
+  // Clamp pitch
+  pitch = Math.max(-Math.PI/3, Math.min(Math.PI/3, pitch));
+}
+
+// Enable button (required on iOS)
+document.getElementById('startBtn').onclick = async () => {
+  if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+    const permission = await DeviceOrientationEvent.requestPermission();
+    if (permission !== 'granted') return;
+  }
+
+  window.addEventListener('deviceorientation', handleOrientation);
+  document.getElementById('startBtn').style.display = 'none';
+};
+
+// Smoothing factor (lower = smoother)
+const smoothing = 0.1;
+
+function updateCameraRotation(){
+  smoothYaw += (yaw - smoothYaw) * smoothing;
+  smoothPitch += (pitch - smoothPitch) * smoothing;
+
+  camera.rotation.order = "YXZ";
+  camera.rotation.y = smoothYaw;
+  camera.rotation.x = smoothPitch;
+}
+
 // Animate
-function animate() {
+function animate(){
   requestAnimationFrame(animate);
 
+  updateCameraRotation();
   updateMovement();
 
   renderer.render(scene, camera);
@@ -177,8 +213,8 @@ function animate() {
 animate();
 
 // Resize
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+window.addEventListener('resize', ()=>{
+  camera.aspect = window.innerWidth/window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
