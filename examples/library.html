@@ -90,9 +90,14 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
-    directionalLight.position.set(5, 10, 7);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    // Blender Sun direction converted to three.js world direction.
+    const sunDirection = new THREE.Vector3(0.38086758, -0.74525532, 0.54729736).normalize();
+    const sunDistance = 50;
+    directionalLight.position.copy(sunDirection).multiplyScalar(-sunDistance);
+    directionalLight.target.position.set(0, 0, 0);
     scene.add(directionalLight);
+    scene.add(directionalLight.target);
 
     const loader = new GLTFLoader();
     loader.load(
