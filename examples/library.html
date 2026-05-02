@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Library - Camera Movement + GLB</title>
+  <title>Library — GLB + baked GI lightmap</title>
   <link rel="icon" href="data:," />
   <style>
     body {
@@ -74,6 +74,24 @@
     import * as THREE from "three";
     import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
+    /**
+     * Paths to textures baked with AutoLightmap.py (export PNG/WebP next to this file or host them).
+     * Names follow IMAGE_NAME + group suffix from Blender, e.g. LightmapAtlas_MyGroup.png
+     * Use null for aoMapUrl to skip AO.
+     */
+    const CONFIG = {
+      glbUrl:
+        "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
+      /** GI-only indirect bake — linear / non-color data */
+      lightMapUrl: "./LightmapAtlas.png",
+      aoMapUrl: "./LightmapAtlas_AO.png",
+      lightMapIntensity: 1.0,
+      aoMapIntensity: 1.0,
+      /** Lower ambient when lightmap carries bounce GI (hybrid with real-time sun/spec). */
+      ambientIntensity: 0.28,
+      directionalIntensity: 0.85,
+    };
+
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x202020);
 
@@ -86,15 +104,20 @@
     );
     camera.position.set(0, cameraHeight, 5);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance",
+      stencil: false,
+      depth: true,
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     document.body.appendChild(renderer.domElement);
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    const ambientLight = new THREE.AmbientLight(0xffffff, CONFIG.ambientIntensity);
     scene.add(ambientLight);
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
-    // Blender Sun direction converted to three.js world direction.
+    const directionalLight = new THREE.DirectionalLight(0xffffff, CONFIG.directionalIntensity);
     const sunDirection = new THREE.Vector3(0.85340573, -0.3994638, 0.3348542).normalize();
     const sunDistance = 50;
     directionalLight.position.copy(sunDirection).multiplyScalar(-sunDistance);
@@ -102,17 +125,109 @@
     scene.add(directionalLight);
     scene.add(directionalLight.target);
 
-    const loader = new GLTFLoader();
-    loader.load(
-      "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
-      (gltf) => {
-        scene.add(gltf.scene);
-      },
-      undefined,
-      (error) => {
-        console.error("Failed to load Library.glb:", error);
+    function loadTexture(url, colorSpace) {
+      const loader = new THREE.TextureLoader();
+      return new Promise((resolve, reject) => {
+        loader.load(
+          url,
+          (tex) => {
+            tex.colorSpace = colorSpace;
+            tex.flipY = false;
+            tex.generateMipmaps = true;
+            tex.minFilter = THREE.LinearMipmapLinearFilter;
+            tex.magFilter = THREE.LinearFilter;
+            resolve(tex);
+          },
+          undefined,
+          reject
+        );
+      });
+    }
+
+    /**
+     * Attach baked GI + optional AO without destroying per-mesh PBR differences.
+     * Clones each MeshStandardMaterial once per original material reference.
+     */
+    function applyBakedMaps(root, lightMap, aoMap) {
+      const cloneFor = new Map();
+      let warnedNoUv2 = false;
+
+      root.traverse((child) => {
+        if (!child.isMesh) return;
+        const geo = child.geometry;
+        if (!geo.attributes.uv2) {
+          if (!warnedNoUv2) {
+            console.warn(
+              "[Lightmap] Missing geometry.attributes.uv2 — export LightmapUV as second UV from Blender."
+            );
+            warnedNoUv2 = true;
+          }
+          return;
+        }
+
+        const orig = child.material;
+        const list = Array.isArray(orig) ? orig : [orig];
+        const next = list.map((m) => {
+          if (!(m instanceof THREE.MeshStandardMaterial)) return m;
+          let nm = cloneFor.get(m);
+          if (!nm) {
+            nm = m.clone();
+            nm.lightMap = lightMap;
+            nm.lightMapIntensity = CONFIG.lightMapIntensity;
+            if (aoMap) {
+              nm.aoMap = aoMap;
+              nm.aoMapIntensity = CONFIG.aoMapIntensity;
+            }
+            nm.needsUpdate = true;
+            cloneFor.set(m, nm);
+          }
+          return nm;
+        });
+        child.material = Array.isArray(orig) ? next : next[0];
+      });
+    }
+
+    const gltfLoader = new GLTFLoader();
+    const linearSpace = THREE.LinearSRGBColorSpace;
+
+    async function bootstrap() {
+      let lightMapTex = null;
+      let aoTex = null;
+
+      try {
+        lightMapTex = await loadTexture(CONFIG.lightMapUrl, linearSpace);
+      } catch (e) {
+        console.warn(
+          "[Lightmap] Could not load lightMapUrl — place baked PNG next to index or set CONFIG.lightMapUrl:",
+          CONFIG.lightMapUrl,
+          e
+        );
       }
-    );
+
+      if (CONFIG.aoMapUrl) {
+        try {
+          aoTex = await loadTexture(CONFIG.aoMapUrl, linearSpace);
+        } catch (e) {
+          console.warn("[Lightmap] AO optional — failed to load:", CONFIG.aoMapUrl, e);
+        }
+      }
+
+      gltfLoader.load(
+        CONFIG.glbUrl,
+        (gltf) => {
+          scene.add(gltf.scene);
+          if (lightMapTex) {
+            applyBakedMaps(gltf.scene, lightMapTex, aoTex);
+          }
+        },
+        undefined,
+        (error) => {
+          console.error("Failed to load GLB:", error);
+        }
+      );
+    }
+
+    bootstrap();
 
     const move = { forward: false, back: false, left: false, right: false };
     function bindButton(id, key) {
@@ -131,11 +246,13 @@
     const speed = 0.08;
     const forwardVec = new THREE.Vector3();
     const rightVec = new THREE.Vector3();
+    const upAxis = new THREE.Vector3(0, 1, 0);
+
     function updateMovement() {
       camera.getWorldDirection(forwardVec);
       forwardVec.y = 0;
       forwardVec.normalize();
-      rightVec.crossVectors(forwardVec, new THREE.Vector3(0, 1, 0)).normalize();
+      rightVec.crossVectors(forwardVec, upAxis).normalize();
 
       const moveVec = new THREE.Vector3();
       if (move.forward) moveVec.add(forwardVec);
@@ -193,6 +310,7 @@
     window.addEventListener("resize", () => {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
   </script>
