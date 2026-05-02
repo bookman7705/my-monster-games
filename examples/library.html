@@ -119,6 +119,7 @@
     const ambientLight = new THREE.AmbientLight(0xffffff, CONFIG.ambientIntensity);
     ambientLight.userData.baseIntensity = CONFIG.ambientIntensity;
     scene.add(ambientLight);
+    ambientLight.intensity = 0.05;
 
     const directionalLight = new THREE.DirectionalLight(0xffffff, CONFIG.directionalIntensity);
     directionalLight.userData.baseIntensity = CONFIG.directionalIntensity;
