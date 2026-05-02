@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Library — GLB + baked GI lightmap</title>
-
+  <link rel="icon" href="data:," />
   <style>
     body {
       margin: 0;
@@ -23,221 +23,588 @@
       cursor: pointer;
       z-index: 10;
     }
-  </style>
-</head>
 
-<body>
-<button id="startBtn">Enable Look</button>
-
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
-  }
-}
-</script>
-
-<script type="module">
-import * as THREE from "three";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-
-/* =========================================================
-   CONFIG
-========================================================= */
-const CONFIG = {
-  glbUrl: "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
-
-  // baked textures
-  lightMapUrl: "./LightmapAtlas.png",
-  aoMapUrl: "./LightmapAtlas_AO.png",
-
-  lightMapIntensity: 1.0,
-  aoMapIntensity: 1.0,
-
-  // lighting modes
-  enableSceneLights: false,
-
-  // IMPORTANT: Unreal equivalent lighting (optional HDRI)
-  enableEnvironment: true,
-  envMapUrl: "./env.hdr",
-
-  ambientIntensity: 0.15,
-  directionalIntensity: 0.85
-};
-
-/* =========================================================
-   SCENE SETUP
-========================================================= */
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x202020);
-
-const camera = new THREE.PerspectiveCamera(
-  75,
-  innerWidth / innerHeight,
-  0.1,
-  1000
-);
-camera.position.set(0, 1.6, 5);
-
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-document.body.appendChild(renderer.domElement);
-
-/* =========================================================
-   LIGHTS (REALTIME)
-========================================================= */
-const ambientLight = new THREE.AmbientLight(0xffffff, CONFIG.ambientIntensity);
-scene.add(ambientLight);
-
-const directionalLight = new THREE.DirectionalLight(0xffffff, CONFIG.directionalIntensity);
-directionalLight.position.set(5, 10, 5);
-scene.add(directionalLight);
-
-/* =========================================================
-   ENVIRONMENT LIGHT (IMPORTANT MISSING PIECE)
-========================================================= */
-async function loadEnvMap() {
-  if (!CONFIG.enableEnvironment) return;
-
-  const loader = new THREE.RGBELoader();
-  const tex = await new Promise((resolve, reject) => {
-    loader.load(CONFIG.envMapUrl, resolve, undefined, reject);
-  });
-
-  tex.mapping = THREE.EquirectangularReflectionMapping;
-  scene.environment = tex;
-}
-
-/* =========================================================
-   TEXTURE LOADING
-========================================================= */
-function loadTexture(url) {
-  return new Promise((resolve, reject) => {
-    new THREE.TextureLoader().load(url, resolve, undefined, reject);
-  });
-}
-
-/* =========================================================
-   LIGHTMAP APPLY
-========================================================= */
-function applyBakedMaps(root, lightMap, aoMap) {
-
-  const cache = new Map();
-
-  root.traverse((obj) => {
-    if (!obj.isMesh) return;
-
-    const mat = obj.material;
-    const list = Array.isArray(mat) ? mat : [mat];
-
-    const newList = list.map((m) => {
-
-      if (!(m instanceof THREE.MeshStandardMaterial)) return m;
-
-      let cloned = cache.get(m);
-      if (!cloned) {
-        cloned = m.clone();
-
-        // 🔥 baked GI
-        cloned.lightMap = lightMap;
-        cloned.lightMapIntensity = CONFIG.lightMapIntensity;
-
-        // optional AO
-        if (aoMap) {
-          cloned.aoMap = aoMap;
-          cloned.aoMapIntensity = CONFIG.aoMapIntensity;
-        }
-
-        cloned.needsUpdate = true;
-        cache.set(m, cloned);
-      }
-
-      return cloned;
-    });
-
-    obj.material = Array.isArray(mat) ? newList : newList[0];
-  });
-}
-
-/* =========================================================
-   LIGHT CONTROL
-========================================================= */
-function setLights(enabled) {
-  ambientLight.intensity = enabled ? CONFIG.ambientIntensity : 0;
-  directionalLight.intensity = enabled ? CONFIG.directionalIntensity : 0;
-}
-
-/* =========================================================
-   LOAD PIPELINE
-========================================================= */
-const gltfLoader = new GLTFLoader();
-
-async function start() {
-
-  // optional HDR environment (Unreal-style skylight replacement)
-  try {
-    await loadEnvMap();
-  } catch (e) {
-    console.warn("No env map loaded (optional).");
-  }
-
-  let lightMap = null;
-  let aoMap = null;
-
-  try {
-    lightMap = await loadTexture(CONFIG.lightMapUrl);
-  } catch {}
-
-  try {
-    aoMap = await loadTexture(CONFIG.aoMapUrl);
-  } catch {}
-
-  gltfLoader.load(CONFIG.glbUrl, (gltf) => {
-
-    scene.add(gltf.scene);
-
-    setLights(CONFIG.enableSceneLights);
-
-    if (lightMap) {
-      applyBakedMaps(gltf.scene, lightMap, aoMap);
+    #controls {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: grid;
+      grid-template-columns: 60px 60px 60px;
+      gap: 10px;
+      z-index: 10;
+      user-select: none;
     }
 
-  });
-}
+    button.move {
+      width: 60px;
+      height: 60px;
+      font-size: 18px;
+      opacity: 0.75;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
 
-start();
+    #forward { grid-column: 2; }
+    #left { grid-column: 1; grid-row: 2; }
+    #back { grid-column: 2; grid-row: 2; }
+    #right { grid-column: 3; grid-row: 2; }
 
-/* =========================================================
-   DEBUG TOGGLE (important for testing)
-========================================================= */
-window.testBakeOnly = () => {
-  setLights(false);
-  console.log("Bake-only mode (Unreal lightmap test)");
-};
+    #lightmapDebug {
+      position: absolute;
+      top: 56px;
+      left: 20px;
+      max-width: min(420px, 92vw);
+      padding: 10px 12px;
+      background: rgba(0, 0, 0, 0.72);
+      color: #e8e8e8;
+      font: 12px/1.45 Consolas, "Courier New", monospace;
+      z-index: 11;
+      border-radius: 6px;
+      pointer-events: none;
+    }
 
-window.testHybrid = () => {
-  setLights(true);
-  console.log("Hybrid mode (baked + realtime)");
-};
+    #lightmapDebug h3 {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+    }
 
-window.testUnrealStyle = () => {
-  setLights(false);
-  scene.environmentIntensity = 1.0;
-  console.log("Unreal-style (GI + HDR only)");
-};
+    #lightmapDebug .ok {
+      color: #7dffb3;
+    }
 
-/* =========================================================
-   RESIZE
-========================================================= */
-addEventListener("resize", () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
+    #lightmapDebug .warn {
+      color: #ffd47d;
+    }
 
-</script>
+    #lightmapDebug .err {
+      color: #ff7d7d;
+    }
+
+    #lightmapDebugPreview {
+      display: block;
+      margin-top: 8px;
+      width: 128px;
+      height: 128px;
+      image-rendering: pixelated;
+      background: #111;
+      border: 1px solid #444;
+      border-radius: 4px;
+    }
+
+    #lightmapDebugPreview.hidden {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <button id="startBtn">Enable Look</button>
+  <div id="controls">
+    <button id="forward" class="move">↑</button>
+    <button id="left" class="move">←</button>
+    <button id="back" class="move">↓</button>
+    <button id="right" class="move">→</button>
+  </div>
+
+  <div id="lightmapDebug" aria-live="polite" hidden>
+    <h3>Lightmap debug</h3>
+    <div id="lightmapDebugBody"></div>
+    <canvas id="lightmapDebugPreview" class="hidden" width="128" height="128"></canvas>
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+    /**
+     * Paths to textures baked with AutoLightmap.py (export PNG/WebP next to this file or host them).
+     * Names follow IMAGE_NAME + group suffix from Blender, e.g. LightmapAtlas_MyGroup.png
+     * Use null for aoMapUrl to skip AO.
+     */
+    const CONFIG = {
+      glbUrl:
+        "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
+      /** When false, scene lights are off (lightmap / emissive-only look). Toggle to true for dynamic lighting + spec. */
+      enableSceneLights: false,
+      /** GI-only indirect bake — linear / non-color data */
+      lightMapUrl: "./LightmapAtlas.png",
+      aoMapUrl: "./LightmapAtlas_AO.png",
+      lightMapIntensity: 1.0,
+      aoMapIntensity: 1.0,
+      /** Lower ambient when lightmap carries bounce GI (hybrid with real-time sun/spec). */
+      ambientIntensity: 0.28,
+      directionalIntensity: 0.85,
+      /**
+       * Debug-only second ambient: always active, NOT affected by enableSceneLights.
+       * Use ~0.1 to verify lightmap contribution when “real” lights are off. Set to 0 to remove.
+       */
+      debugAmbientIntensity: 0.1,
+      /** On-screen panel: load status, UV2 stats, lightmap thumbnail. Set false to hide. */
+      showLightmapDebugUI: true,
+    };
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x202020);
+
+    const cameraHeight = 1.6;
+    const camera = new THREE.PerspectiveCamera(
+      75,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      1000
+    );
+    camera.position.set(0, cameraHeight, 5);
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance",
+      stencil: false,
+      depth: true,
+    });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    document.body.appendChild(renderer.domElement);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, CONFIG.ambientIntensity);
+    ambientLight.userData.baseIntensity = CONFIG.ambientIntensity;
+    scene.add(ambientLight);
+
+    const directionalLight = new THREE.DirectionalLight(0xffffff, CONFIG.directionalIntensity);
+    directionalLight.userData.baseIntensity = CONFIG.directionalIntensity;
+    const sunDirection = new THREE.Vector3(0.85340573, -0.3994638, 0.3348542).normalize();
+    const sunDistance = 50;
+    directionalLight.position.copy(sunDirection).multiplyScalar(-sunDistance);
+    directionalLight.target.position.set(0, 0, 0);
+    scene.add(directionalLight);
+    scene.add(directionalLight.target);
+
+    const debugAmbientLight = new THREE.AmbientLight(
+      0xffffff,
+      CONFIG.debugAmbientIntensity
+    );
+    debugAmbientLight.name = "DebugAmbientFill";
+    scene.add(debugAmbientLight);
+
+    /** Applies CONFIG.enableSceneLights to ambient, directional, and any lights under `root` (e.g. GLB). */
+    function applySceneLightsEnabled(enabled, root = null) {
+      const applyOne = (light) => {
+        if (light.userData.baseIntensity === undefined) {
+          light.userData.baseIntensity = light.intensity;
+        }
+        light.visible = enabled;
+        light.intensity = enabled ? light.userData.baseIntensity : 0;
+      };
+
+      applyOne(ambientLight);
+      applyOne(directionalLight);
+
+      if (root) {
+        root.traverse((o) => {
+          if (o.isLight) applyOne(o);
+        });
+      }
+    }
+
+    applySceneLightsEnabled(CONFIG.enableSceneLights);
+
+    const lightmapDebugEl = document.getElementById("lightmapDebug");
+    const lightmapDebugBodyEl = document.getElementById("lightmapDebugBody");
+    const lightmapDebugPreviewEl = document.getElementById("lightmapDebugPreview");
+
+    function setLightmapDebugVisible(show) {
+      if (!CONFIG.showLightmapDebugUI) {
+        lightmapDebugEl.hidden = true;
+        return;
+      }
+      lightmapDebugEl.hidden = !show;
+    }
+
+    function esc(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function drawLightmapPreview(tex) {
+      if (!tex || !tex.image || !lightmapDebugPreviewEl) return;
+      const img = tex.image;
+      if (!img.width) return;
+      lightmapDebugPreviewEl.classList.remove("hidden");
+      const ctx = lightmapDebugPreviewEl.getContext("2d");
+      ctx.clearRect(0, 0, lightmapDebugPreviewEl.width, lightmapDebugPreviewEl.height);
+      ctx.drawImage(img, 0, 0, lightmapDebugPreviewEl.width, lightmapDebugPreviewEl.height);
+    }
+
+    /**
+     * @param {object} state
+     * @param {{ ok: boolean, url: string, size?: string, error?: string }} state.lightMap
+     * @param {{ ok: boolean, skipped?: boolean, url?: string, size?: string, error?: string }} state.ao
+     * @param {object} [state.apply]
+     */
+    function renderLightmapDebugPanel(state) {
+      if (!CONFIG.showLightmapDebugUI) {
+        lightmapDebugEl.hidden = true;
+        return;
+      }
+
+      const lm = state.lightMap;
+      const lmLine = lm.ok
+        ? `<span class="ok">LOAD OK</span> ${esc(lm.size || "")}<br/>${esc(lm.url)}`
+        : `<span class="err">LOAD FAILED</span><br/>${esc(lm.url)}<br/><span class="warn">${esc(
+            lm.error || "unknown error"
+          )}</span>`;
+
+      let aoLine = "";
+      if (state.ao.skipped) {
+        aoLine = `<span class="warn">AO skipped</span> (aoMapUrl not set)`;
+      } else if (state.ao.ok) {
+        aoLine = `<span class="ok">AO LOAD OK</span> ${esc(state.ao.size || "")}<br/>${esc(
+          state.ao.url || ""
+        )}`;
+      } else {
+        aoLine = `<span class="err">AO FAILED</span><br/>${esc(state.ao.url || "")}<br/><span class="warn">${esc(
+          state.ao.error || ""
+        )}</span>`;
+      }
+
+      let applyBlock = "";
+      if (state.apply) {
+        const a = state.apply;
+        const uvWarn =
+          a.meshSkippedNoUv2 > 0
+            ? `<span class="warn"> ${a.meshSkippedNoUv2} mesh(es) missing uv2 — lightmap cannot apply</span>`
+            : `<span class="ok"> uv2 present on sampled meshes</span>`;
+        const working =
+          lm.ok &&
+          a.meshWithLightMap > 0 &&
+          a.materialsWithLightMap > 0 &&
+          a.meshSkippedNoUv2 === 0;
+        const statusLine = working
+          ? `<span class="ok">Lightmap pipeline: OK (applied to materials)</span>`
+          : lm.ok && a.meshSkippedNoUv2 > 0
+            ? `<span class="warn">Texture loaded but not usable without uv2 on meshes</span>`
+            : lm.ok && a.meshWithLightMap === 0
+              ? `<span class="warn">No MeshStandardMaterial meshes updated — check materials</span>`
+              : !lm.ok
+                ? `<span class="err">No lightmap texture — cannot verify shading</span>`
+                : `<span class="warn">Check stats below</span>`;
+
+        applyBlock = `
+<br/><br/><strong>Scene / GLB</strong><br/>
+${statusLine}<br/>
+Meshes (total): ${a.meshTotal}<br/>
+Meshes with <code>uv2</code>: ${a.meshWithUv2}<br/>
+Meshes skipped (no uv2): ${a.meshSkippedNoUv2}${uvWarn}<br/>
+Meshes using MeshStandardMaterial + lightMap: ${a.meshWithLightMap}<br/>
+Unique materials given lightMap: ${a.materialsWithLightMap}<br/>
+Non-standard materials skipped: ${a.meshSkippedNonStd}
+`;
+      }
+
+      lightmapDebugBodyEl.innerHTML = `
+<strong>Light map texture</strong><br/>
+${lmLine}<br/><br/>
+<strong>Ambient occlusion</strong><br/>
+${aoLine}
+${applyBlock}
+`;
+      setLightmapDebugVisible(true);
+    }
+
+    function loadTexture(url, colorSpace) {
+      const loader = new THREE.TextureLoader();
+      return new Promise((resolve, reject) => {
+        loader.load(
+          url,
+          (tex) => {
+            tex.colorSpace = colorSpace;
+            tex.flipY = false;
+            tex.generateMipmaps = true;
+            tex.minFilter = THREE.LinearMipmapLinearFilter;
+            tex.magFilter = THREE.LinearFilter;
+            resolve(tex);
+          },
+          undefined,
+          reject
+        );
+      });
+    }
+
+    /**
+     * Attach baked GI + optional AO without destroying per-mesh PBR differences.
+     * Clones each MeshStandardMaterial once per original material reference.
+     */
+    /**
+     * @returns {{
+     *   meshTotal: number,
+     *   meshWithUv2: number,
+     *   meshSkippedNoUv2: number,
+     *   meshSkippedNonStd: number,
+     *   meshWithLightMap: number,
+     *   materialsWithLightMap: number,
+     * }}
+     */
+    function applyBakedMaps(root, lightMap, aoMap) {
+      const cloneFor = new Map();
+      let warnedNoUv2 = false;
+
+      const stats = {
+        meshTotal: 0,
+        meshWithUv2: 0,
+        meshSkippedNoUv2: 0,
+        meshSkippedNonStd: 0,
+        meshWithLightMap: 0,
+        materialsWithLightMap: 0,
+      };
+
+      root.traverse((child) => {
+        if (!child.isMesh) return;
+        stats.meshTotal += 1;
+
+        const geo = child.geometry;
+        if (!geo.attributes.uv2) {
+          stats.meshSkippedNoUv2 += 1;
+          if (!warnedNoUv2) {
+            console.warn(
+              "[Lightmap] Missing geometry.attributes.uv2 — export LightmapUV as second UV from Blender."
+            );
+            warnedNoUv2 = true;
+          }
+          return;
+        }
+
+        stats.meshWithUv2 += 1;
+
+        const orig = child.material;
+        const list = Array.isArray(orig) ? orig : [orig];
+        let appliedThisMesh = false;
+        const next = list.map((m) => {
+          if (!(m instanceof THREE.MeshStandardMaterial)) {
+            return m;
+          }
+          let nm = cloneFor.get(m);
+          if (!nm) {
+            nm = m.clone();
+            nm.lightMap = lightMap;
+            nm.lightMapIntensity = CONFIG.lightMapIntensity;
+            if (aoMap) {
+              nm.aoMap = aoMap;
+              nm.aoMapIntensity = CONFIG.aoMapIntensity;
+            }
+            nm.needsUpdate = true;
+            cloneFor.set(m, nm);
+            stats.materialsWithLightMap += 1;
+          }
+          appliedThisMesh = true;
+          return nm;
+        });
+
+        if (!appliedThisMesh) {
+          stats.meshSkippedNonStd += 1;
+        } else {
+          stats.meshWithLightMap += 1;
+        }
+
+        child.material = Array.isArray(orig) ? next : next[0];
+      });
+
+      return stats;
+    }
+
+    const gltfLoader = new GLTFLoader();
+    const linearSpace = THREE.LinearSRGBColorSpace;
+
+    async function bootstrap() {
+      let lightMapTex = null;
+      let aoTex = null;
+
+      const debugState = {
+        lightMap: {
+          ok: false,
+          url: CONFIG.lightMapUrl,
+          size: "",
+          error: "",
+        },
+        ao: {
+          ok: false,
+          skipped: !CONFIG.aoMapUrl,
+          url: CONFIG.aoMapUrl || "",
+          size: "",
+          error: "",
+        },
+        apply: null,
+      };
+
+      try {
+        lightMapTex = await loadTexture(CONFIG.lightMapUrl, linearSpace);
+        debugState.lightMap.ok = true;
+        debugState.lightMap.size =
+          lightMapTex.image && lightMapTex.image.width
+            ? `${lightMapTex.image.width}×${lightMapTex.image.height}`
+            : "";
+        drawLightmapPreview(lightMapTex);
+        console.info("[Lightmap] Texture loaded:", CONFIG.lightMapUrl, debugState.lightMap.size);
+      } catch (e) {
+        debugState.lightMap.ok = false;
+        debugState.lightMap.error = e && e.message ? e.message : String(e);
+        console.warn(
+          "[Lightmap] Could not load lightMapUrl — place baked PNG next to index or set CONFIG.lightMapUrl:",
+          CONFIG.lightMapUrl,
+          e
+        );
+      }
+
+      if (CONFIG.aoMapUrl) {
+        try {
+          aoTex = await loadTexture(CONFIG.aoMapUrl, linearSpace);
+          debugState.ao.ok = true;
+          debugState.ao.skipped = false;
+          debugState.ao.size =
+            aoTex.image && aoTex.image.width
+              ? `${aoTex.image.width}×${aoTex.image.height}`
+              : "";
+          console.info("[Lightmap] AO loaded:", CONFIG.aoMapUrl, debugState.ao.size);
+        } catch (e) {
+          debugState.ao.ok = false;
+          debugState.ao.error = e && e.message ? e.message : String(e);
+          console.warn("[Lightmap] AO optional — failed to load:", CONFIG.aoMapUrl, e);
+        }
+      }
+
+      renderLightmapDebugPanel(debugState);
+
+      gltfLoader.load(
+        CONFIG.glbUrl,
+        (gltf) => {
+          scene.add(gltf.scene);
+          applySceneLightsEnabled(CONFIG.enableSceneLights, gltf.scene);
+          if (lightMapTex) {
+            debugState.apply = applyBakedMaps(gltf.scene, lightMapTex, aoTex);
+            console.info("[Lightmap] Apply stats:", debugState.apply);
+          } else {
+            debugState.apply = {
+              meshTotal: 0,
+              meshWithUv2: 0,
+              meshSkippedNoUv2: 0,
+              meshSkippedNonStd: 0,
+              meshWithLightMap: 0,
+              materialsWithLightMap: 0,
+            };
+            gltf.scene.traverse((c) => {
+              if (!c.isMesh) return;
+              debugState.apply.meshTotal += 1;
+              if (!c.geometry.attributes.uv2) debugState.apply.meshSkippedNoUv2 += 1;
+              else debugState.apply.meshWithUv2 += 1;
+            });
+          }
+          renderLightmapDebugPanel(debugState);
+        },
+        undefined,
+        (error) => {
+          console.error("Failed to load GLB:", error);
+        }
+      );
+    }
+
+    bootstrap();
+
+    const move = { forward: false, back: false, left: false, right: false };
+    function bindButton(id, key) {
+      const el = document.getElementById(id);
+      el.addEventListener("touchstart", () => (move[key] = true), { passive: true });
+      el.addEventListener("touchend", () => (move[key] = false), { passive: true });
+      el.addEventListener("mousedown", () => (move[key] = true));
+      el.addEventListener("mouseup", () => (move[key] = false));
+      el.addEventListener("mouseleave", () => (move[key] = false));
+    }
+    bindButton("forward", "forward");
+    bindButton("back", "back");
+    bindButton("left", "left");
+    bindButton("right", "right");
+
+    const speed = 0.08;
+    const forwardVec = new THREE.Vector3();
+    const rightVec = new THREE.Vector3();
+    const upAxis = new THREE.Vector3(0, 1, 0);
+
+    function updateMovement() {
+      camera.getWorldDirection(forwardVec);
+      forwardVec.y = 0;
+      forwardVec.normalize();
+      rightVec.crossVectors(forwardVec, upAxis).normalize();
+
+      const moveVec = new THREE.Vector3();
+      if (move.forward) moveVec.add(forwardVec);
+      if (move.back) moveVec.addScaledVector(forwardVec, -1);
+      if (move.right) moveVec.add(rightVec);
+      if (move.left) moveVec.addScaledVector(rightVec, -1);
+
+      if (moveVec.lengthSq() > 0) {
+        moveVec.normalize().multiplyScalar(speed);
+        camera.position.add(moveVec);
+      }
+      camera.position.y = cameraHeight;
+    }
+
+    let yaw = 0;
+    let pitch = 0;
+    let smoothYaw = 0;
+    let smoothPitch = 0;
+    let baseAlpha = null;
+
+    function handleOrientation(e) {
+      if (e.alpha === null) return;
+      if (baseAlpha === null) baseAlpha = e.alpha;
+      yaw = THREE.MathUtils.degToRad(e.alpha - baseAlpha);
+      pitch = THREE.MathUtils.degToRad(e.beta - 90);
+      pitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, pitch));
+    }
+
+    document.getElementById("startBtn").onclick = async () => {
+      if (typeof DeviceOrientationEvent.requestPermission === "function") {
+        const permission = await DeviceOrientationEvent.requestPermission();
+        if (permission !== "granted") return;
+      }
+      window.addEventListener("deviceorientation", handleOrientation);
+      document.getElementById("startBtn").style.display = "none";
+    };
+
+    const smoothing = 0.1;
+    function updateCameraRotation() {
+      smoothYaw += (yaw - smoothYaw) * smoothing;
+      smoothPitch += (pitch - smoothPitch) * smoothing;
+      camera.rotation.order = "YXZ";
+      camera.rotation.y = smoothYaw;
+      camera.rotation.x = smoothPitch;
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      updateCameraRotation();
+      updateMovement();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
 </body>
 </html>
