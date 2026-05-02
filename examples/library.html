@@ -82,6 +82,8 @@
     const CONFIG = {
       glbUrl:
         "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
+      /** When false, scene lights are off (lightmap / emissive-only look). Toggle to true for dynamic lighting + spec. */
+      enableSceneLights: false,
       /** GI-only indirect bake — linear / non-color data */
       lightMapUrl: "./LightmapAtlas.png",
       aoMapUrl: "./LightmapAtlas_AO.png",
@@ -115,15 +117,39 @@
     document.body.appendChild(renderer.domElement);
 
     const ambientLight = new THREE.AmbientLight(0xffffff, CONFIG.ambientIntensity);
+    ambientLight.userData.baseIntensity = CONFIG.ambientIntensity;
     scene.add(ambientLight);
 
     const directionalLight = new THREE.DirectionalLight(0xffffff, CONFIG.directionalIntensity);
+    directionalLight.userData.baseIntensity = CONFIG.directionalIntensity;
     const sunDirection = new THREE.Vector3(0.85340573, -0.3994638, 0.3348542).normalize();
     const sunDistance = 50;
     directionalLight.position.copy(sunDirection).multiplyScalar(-sunDistance);
     directionalLight.target.position.set(0, 0, 0);
     scene.add(directionalLight);
     scene.add(directionalLight.target);
+
+    /** Applies CONFIG.enableSceneLights to ambient, directional, and any lights under `root` (e.g. GLB). */
+    function applySceneLightsEnabled(enabled, root = null) {
+      const applyOne = (light) => {
+        if (light.userData.baseIntensity === undefined) {
+          light.userData.baseIntensity = light.intensity;
+        }
+        light.visible = enabled;
+        light.intensity = enabled ? light.userData.baseIntensity : 0;
+      };
+
+      applyOne(ambientLight);
+      applyOne(directionalLight);
+
+      if (root) {
+        root.traverse((o) => {
+          if (o.isLight) applyOne(o);
+        });
+      }
+    }
+
+    applySceneLightsEnabled(CONFIG.enableSceneLights);
 
     function loadTexture(url, colorSpace) {
       const loader = new THREE.TextureLoader();
@@ -216,6 +242,7 @@
         CONFIG.glbUrl,
         (gltf) => {
           scene.add(gltf.scene);
+          applySceneLightsEnabled(CONFIG.enableSceneLights, gltf.scene);
           if (lightMapTex) {
             applyBakedMaps(gltf.scene, lightMapTex, aoTex);
           }
