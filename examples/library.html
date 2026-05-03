@@ -127,6 +127,7 @@
   <script type="module">
     import * as THREE from "three";
     import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { RGBELoader } from "three/addons/loaders/RGBELoader.js";
 
     /**
      * Per-mesh lightmap paths match AutoLightmap.py image_names_for_group():
@@ -148,16 +149,23 @@
       enableSceneLights: true,
       lightMapIntensity: 1.0,
       aoMapIntensity: 1.0,
-      /** Lower ambient when lightmap carries bounce GI (hybrid with real-time sun/spec). */
-      ambientIntensity: 0.28,
-      directionalIntensity: 0.85,
+      /** Ambient + HDRI fill (hybrid with baked lightmap). */
+      ambientIntensity: 0.38,
+      /** Key light; raised for clearer sun/spec with HDRI IBL. */
+      directionalIntensity: 1.55,
       /**
        * Debug-only second ambient: always active, NOT affected by enableSceneLights.
        * Use ~0.1 to verify lightmap contribution when “real” lights are off. Set to 0 to remove.
        */
-      debugAmbientIntensity: 0.1,
+      debugAmbientIntensity: 0,
       /** On-screen panel: load status, UV2 stats, lightmap thumbnail. Set false to hide. */
       showLightmapDebugUI: true,
+      /** Equirect .hdr beside this file — PMREM → scene.environment only (IBL / reflections, not sky). */
+      environmentHdrUrl: "./aerodynamics_workshop_1k.hdr",
+      /** ACES exposure (HDR + sun). */
+      toneMappingExposure: 0.92,
+      /** Scales HDRI contribution on MeshStandardMaterial (reflections / indirect spec). */
+      iblEnvMapIntensity: 1.2,
     };
 
     const linearSpace = THREE.LinearSRGBColorSpace;
@@ -229,7 +237,41 @@
     });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = CONFIG.toneMappingExposure;
     document.body.appendChild(renderer.domElement);
+
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    pmremGenerator.compileEquirectangularShader();
+
+    function loadHdrEnvironment() {
+      const url = String(CONFIG.environmentHdrUrl || "").trim();
+      if (!url) return Promise.resolve();
+
+      return new Promise((resolve) => {
+        new RGBELoader().load(
+          url,
+          (hdrTexture) => {
+            hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
+
+            const envMap = pmremGenerator.fromEquirectangular(hdrTexture).texture;
+
+            scene.environment = envMap;
+            scene.background = new THREE.Color(0x202020);
+
+            hdrTexture.dispose();
+            pmremGenerator.dispose();
+            resolve();
+          },
+          undefined,
+          (err) => {
+            console.warn("[HDR] environment load failed:", err);
+            resolve();
+          }
+        );
+      });
+    }
 
     const ambientLight = new THREE.AmbientLight(0xffffff, CONFIG.ambientIntensity);
     ambientLight.userData.baseIntensity = CONFIG.ambientIntensity;
@@ -550,6 +592,7 @@ ${applyBlock}
             nm = m.clone();
             nm.lightMap = lightMap;
             nm.lightMapIntensity = CONFIG.lightMapIntensity;
+            nm.envMapIntensity = CONFIG.iblEnvMapIntensity;
             if (aoMap) {
               nm.aoMap = aoMap;
               nm.aoMapIntensity = CONFIG.aoMapIntensity;
@@ -624,6 +667,17 @@ ${applyBlock}
               anyDiffuseLoaded,
               apply,
             });
+
+            gltf.scene.traverse((o) => {
+              if (!o.isMesh) return;
+              const mats = Array.isArray(o.material) ? o.material : [o.material];
+              for (const m of mats) {
+                if (m instanceof THREE.MeshStandardMaterial) {
+                  m.envMapIntensity = CONFIG.iblEnvMapIntensity;
+                  m.needsUpdate = true;
+                }
+              }
+            });
           } catch (err) {
             console.error("[Lightmap] After GLB load:", err);
           }
@@ -635,7 +689,7 @@ ${applyBlock}
       );
     }
 
-    bootstrap();
+    loadHdrEnvironment().then(() => bootstrap());
 
     const move = { forward: false, back: false, left: false, right: false };
     function bindButton(id, key) {
