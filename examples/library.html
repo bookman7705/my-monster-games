@@ -406,6 +406,27 @@ ${applyBlock}
     }
 
     /**
+     * GLTFLoader maps glTF TEXCOORD_0..3 to geometry attributes `uv`, `uv1`, `uv2`, `uv3`.
+     * Blender's second UV (e.g. LightmapUV) becomes TEXCOORD_1 → `uv1`.
+     * MeshStandardMaterial.lightMap / aoMap always sample attribute `uv2`, so two-UV GLBs
+     * need this alias or lightmaps never bind.
+     */
+    function ensureLightmapUv2FromGltfSecondTexcoord(geometry) {
+      if (!geometry?.attributes) return;
+      if (geometry.attributes.uv2) return;
+      const uv1 = geometry.attributes.uv1;
+      if (uv1) {
+        geometry.setAttribute("uv2", uv1);
+      }
+    }
+
+    function traverseMeshesEnsureLightmapUv2(root) {
+      root.traverse((o) => {
+        if (o.isMesh && o.geometry) ensureLightmapUv2FromGltfSecondTexcoord(o.geometry);
+      });
+    }
+
+    /**
      * @returns {Promise<{ pack: Map<string, object>, diagnostics: object[] }>}
      */
     async function loadLightmapPackForBases(bases) {
@@ -498,7 +519,7 @@ ${applyBlock}
           stats.meshSkippedNoUv2 += 1;
           if (!warnedNoUv2) {
             console.warn(
-              "[Lightmap] Missing geometry.attributes.uv2 — export LightmapUV as second UV from Blender."
+              "[Lightmap] Missing geometry.attributes.uv2 (and uv1) — add a second UV in Blender and re-export glTF, or check Draco/custom stripping of TEXCOORD_1."
             );
             warnedNoUv2 = true;
           }
@@ -581,6 +602,7 @@ ${applyBlock}
           try {
             scene.add(gltf.scene);
             applySceneLightsEnabled(CONFIG.enableSceneLights, gltf.scene);
+            traverseMeshesEnsureLightmapUv2(gltf.scene);
 
             const bases = collectLightmapBasesFromScene(gltf.scene);
             const { pack, diagnostics } = await loadLightmapPackForBases(bases);
