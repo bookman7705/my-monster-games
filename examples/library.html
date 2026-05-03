@@ -129,18 +129,23 @@
     import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
     /**
-     * Paths to textures baked with AutoLightmap.py (export PNG/WebP next to this file or host them).
-     * Names follow IMAGE_NAME + group suffix from Blender, e.g. LightmapAtlas_MyGroup.png
-     * Use null for aoMapUrl to skip AO.
+     * Per-mesh lightmap paths match AutoLightmap.py image_names_for_group():
+     *   base = IMAGE_NAME + "_" + groupKey,  AO file = base + "_AO"
+     *   groupKey = sanitize(lightmap_group) from mesh.userData, else "__solo_" + sanitize(mesh.name).
+     * Place exported PNGs under lightmapTextureBasePath (e.g. LightmapAtlas___solo_Sphere.png).
      */
     const CONFIG = {
       glbUrl:
         "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
+      /** Same as AutoLightmap.py IMAGE_NAME */
+      IMAGE_NAME: "LightmapAtlas",
+      /** Prefix URL/folder for baked textures */
+      lightmapTextureBasePath: "./",
+      /** Tried in order per base name */
+      textureExtensions: [".png", ".jpg", ".jpeg", ".webp"],
+      loadAoMaps: true,
       /** When false, scene lights are off (lightmap / emissive-only look). Toggle to true for dynamic lighting + spec. */
       enableSceneLights: false,
-      /** GI-only indirect bake — linear / non-color data */
-      lightMapUrl: "./LightmapAtlas.png",
-      aoMapUrl: "./LightmapAtlas_AO.png",
       lightMapIntensity: 1.0,
       aoMapIntensity: 1.0,
       /** Lower ambient when lightmap carries bounce GI (hybrid with real-time sun/spec). */
@@ -154,6 +159,55 @@
       /** On-screen panel: load status, UV2 stats, lightmap thumbnail. Set false to hide. */
       showLightmapDebugUI: true,
     };
+
+    const linearSpace = THREE.LinearSRGBColorSpace;
+
+    /** Mirrors AutoLightmap.py `sanitize_name`. */
+    function sanitizeName(name) {
+      const s = String(name).trim().replace(/[^A-Za-z0-9._-]+/g, "_");
+      return s || "Group";
+    }
+
+    /** Mirrors AutoLightmap.py `partition_lightmap_groups` key per mesh. */
+    function lightmapGroupKeyForMesh(mesh) {
+      const g = mesh.userData?.lightmap_group;
+      if (typeof g === "string" && g.trim()) {
+        return sanitizeName(g.trim());
+      }
+      return `__solo_${sanitizeName(mesh.name)}`;
+    }
+
+    function lightmapImageBaseForMesh(mesh) {
+      return `${CONFIG.IMAGE_NAME}_${lightmapGroupKeyForMesh(mesh)}`;
+    }
+
+    /** Unique base names (internal image names / file stems) for all meshes under root. */
+    function collectLightmapBasesFromScene(root) {
+      const set = new Set();
+      root.traverse((o) => {
+        if (o.isMesh) set.add(lightmapImageBaseForMesh(o));
+      });
+      return Array.from(set).sort();
+    }
+
+    function candidateUrlsForStem(stem) {
+      let folder = String(CONFIG.lightmapTextureBasePath ?? "./").replace(/\\/g, "/");
+      folder = folder.replace(/\/+$/, "");
+      const prefix = folder.length ? `${folder}/` : "";
+      return CONFIG.textureExtensions.map((ext) => `${prefix}${stem}${ext}`);
+    }
+
+    function formatTextureLoadError(url, err) {
+      if (err instanceof Error && err.message) return err.message;
+      if (err && typeof err === "object") {
+        if (typeof err.message === "string" && err.message) return err.message;
+        const img = err.target;
+        if (img && typeof img.src === "string") {
+          return `Image failed to load: ${img.src}`;
+        }
+      }
+      return `Failed to load: ${url}`;
+    }
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x202020);
@@ -249,10 +303,7 @@
     }
 
     /**
-     * @param {object} state
-     * @param {{ ok: boolean, url: string, size?: string, error?: string }} state.lightMap
-     * @param {{ ok: boolean, skipped?: boolean, url?: string, size?: string, error?: string }} state.ao
-     * @param {object} [state.apply]
+     * @param {{ diagnostics: object[], anyDiffuseLoaded: boolean, apply: object|null }} state
      */
     function renderLightmapDebugPanel(state) {
       if (!CONFIG.showLightmapDebugUI) {
@@ -260,25 +311,19 @@
         return;
       }
 
-      const lm = state.lightMap;
-      const lmLine = lm.ok
-        ? `<span class="ok">LOAD OK</span> ${esc(lm.size || "")}<br/>${esc(lm.url)}`
-        : `<span class="err">LOAD FAILED</span><br/>${esc(lm.url)}<br/><span class="warn">${esc(
-            lm.error || "unknown error"
-          )}</span>`;
-
-      let aoLine = "";
-      if (state.ao.skipped) {
-        aoLine = `<span class="warn">AO skipped</span> (aoMapUrl not set)`;
-      } else if (state.ao.ok) {
-        aoLine = `<span class="ok">AO LOAD OK</span> ${esc(state.ao.size || "")}<br/>${esc(
-          state.ao.url || ""
-        )}`;
-      } else {
-        aoLine = `<span class="err">AO FAILED</span><br/>${esc(state.ao.url || "")}<br/><span class="warn">${esc(
-          state.ao.error || ""
-        )}</span>`;
-      }
+      const atlasRows = (state.diagnostics || [])
+        .map((r) => {
+          const d = r.diffuseOk
+            ? `<span class="ok">GI OK</span> ${esc(r.diffuseUrl)}`
+            : `<span class="err">GI missing</span> <span class="warn">${esc(r.diffuseErr || "")}</span>`;
+          const a = !CONFIG.loadAoMaps
+            ? `<span class="warn">AO disabled (CONFIG.loadAoMaps)</span>`
+            : r.aoOk
+              ? `<span class="ok">AO OK</span> ${esc(r.aoUrl)}`
+              : `<span class="warn">AO not loaded</span> ${esc(r.aoErr || "")}`;
+          return `<strong>${esc(r.baseName)}</strong><br/>${d}<br/>${a}<br/><br/>`;
+        })
+        .join("");
 
       let applyBlock = "";
       if (state.apply) {
@@ -287,19 +332,23 @@
           a.meshSkippedNoUv2 > 0
             ? `<span class="warn"> ${a.meshSkippedNoUv2} mesh(es) missing uv2 — lightmap cannot apply</span>`
             : `<span class="ok"> uv2 present on sampled meshes</span>`;
+        const atlasWarn =
+          (a.meshSkippedNoAtlas || 0) > 0
+            ? `<br/><span class="warn">Meshes with no matching GI file: ${a.meshSkippedNoAtlas}</span>`
+            : "";
         const working =
-          lm.ok &&
+          state.anyDiffuseLoaded &&
           a.meshWithLightMap > 0 &&
-          a.materialsWithLightMap > 0 &&
-          a.meshSkippedNoUv2 === 0;
+          a.meshSkippedNoUv2 === 0 &&
+          (a.meshSkippedNoAtlas || 0) === 0;
         const statusLine = working
           ? `<span class="ok">Lightmap pipeline: OK (applied to materials)</span>`
-          : lm.ok && a.meshSkippedNoUv2 > 0
-            ? `<span class="warn">Texture loaded but not usable without uv2 on meshes</span>`
-            : lm.ok && a.meshWithLightMap === 0
+          : state.anyDiffuseLoaded && a.meshSkippedNoUv2 > 0
+            ? `<span class="warn">GI files found but some meshes lack uv2</span>`
+            : state.anyDiffuseLoaded && a.meshWithLightMap === 0
               ? `<span class="warn">No MeshStandardMaterial meshes updated — check materials</span>`
-              : !lm.ok
-                ? `<span class="err">No lightmap texture — cannot verify shading</span>`
+              : !state.anyDiffuseLoaded
+                ? `<span class="err">No GI textures loaded — check names under lightmapTextureBasePath</span>`
                 : `<span class="warn">Check stats below</span>`;
 
         applyBlock = `
@@ -308,17 +357,16 @@ ${statusLine}<br/>
 Meshes (total): ${a.meshTotal}<br/>
 Meshes with <code>uv2</code>: ${a.meshWithUv2}<br/>
 Meshes skipped (no uv2): ${a.meshSkippedNoUv2}${uvWarn}<br/>
+Meshes skipped (no GI file for derived base): ${a.meshSkippedNoAtlas || 0}${atlasWarn}<br/>
 Meshes using MeshStandardMaterial + lightMap: ${a.meshWithLightMap}<br/>
-Unique materials given lightMap: ${a.materialsWithLightMap}<br/>
+Unique material clones with lightMap: ${a.materialsWithLightMap}<br/>
 Non-standard materials skipped: ${a.meshSkippedNonStd}
 `;
       }
 
       lightmapDebugBodyEl.innerHTML = `
-<strong>Light map texture</strong><br/>
-${lmLine}<br/><br/>
-<strong>Ambient occlusion</strong><br/>
-${aoLine}
+<strong>Atlases (from mesh names / userData.lightmap_group)</strong><br/>
+${atlasRows || "<span class=\"warn\">No meshes in GLB</span>"}
 ${applyBlock}
 `;
       setLightmapDebugVisible(true);
@@ -338,26 +386,96 @@ ${applyBlock}
             resolve(tex);
           },
           undefined,
-          reject
+          (err) => reject(new Error(formatTextureLoadError(url, err)))
         );
       });
     }
 
+    /** First URL that loads; throws if none. */
+    async function loadTextureFirstMatch(urls, colorSpace) {
+      let lastErr = null;
+      for (const url of urls) {
+        try {
+          const tex = await loadTexture(url, colorSpace);
+          return { tex, url };
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr || new Error("No texture candidates matched");
+    }
+
     /**
-     * Attach baked GI + optional AO without destroying per-mesh PBR differences.
-     * Clones each MeshStandardMaterial once per original material reference.
+     * @returns {Promise<{ pack: Map<string, object>, diagnostics: object[] }>}
      */
+    async function loadLightmapPackForBases(bases) {
+      const pack = new Map();
+      const diagnostics = [];
+      for (const baseName of bases) {
+        const diffUrls = candidateUrlsForStem(baseName);
+        let diffuseOk = false;
+        let diffuseUrl = "";
+        let diffuseErr = "";
+        let lightMap = null;
+        let aoOk = false;
+        let aoUrl = "";
+        let aoErr = "";
+        let aoMap = null;
+        try {
+          const r = await loadTextureFirstMatch(diffUrls, linearSpace);
+          lightMap = r.tex;
+          diffuseUrl = r.url;
+          diffuseOk = true;
+        } catch (e) {
+          diffuseErr = e instanceof Error ? e.message : String(e);
+        }
+        if (CONFIG.loadAoMaps && diffuseOk) {
+          const aoStem = `${baseName}_AO`;
+          const aoUrls = candidateUrlsForStem(aoStem);
+          try {
+            const r = await loadTextureFirstMatch(aoUrls, linearSpace);
+            aoMap = r.tex;
+            aoUrl = r.url;
+            aoOk = true;
+          } catch (e) {
+            aoErr = e instanceof Error ? e.message : "optional AO missing";
+          }
+        } else if (!CONFIG.loadAoMaps) {
+          aoErr = "disabled";
+        } else {
+          aoErr = "skipped (no GI texture)";
+        }
+        if (diffuseOk) {
+          pack.set(baseName, { lightMap, aoMap, diffuseUrl, aoUrl });
+        }
+        diagnostics.push({
+          baseName,
+          diffuseOk,
+          diffuseUrl,
+          diffuseErr,
+          aoOk,
+          aoUrl,
+          aoErr,
+          triedDiffuse: diffUrls,
+        });
+      }
+      return { pack, diagnostics };
+    }
+
     /**
+     * Per-mesh GI/AO from `pack` (key = lightmapImageBaseForMesh). Same material on two atlases
+     * gets two clones (key includes material.uuid + baseName).
      * @returns {{
      *   meshTotal: number,
      *   meshWithUv2: number,
      *   meshSkippedNoUv2: number,
      *   meshSkippedNonStd: number,
      *   meshWithLightMap: number,
+     *   meshSkippedNoAtlas: number,
      *   materialsWithLightMap: number,
      * }}
      */
-    function applyBakedMaps(root, lightMap, aoMap) {
+    function applyBakedMapsFromPack(root, pack) {
       const cloneFor = new Map();
       let warnedNoUv2 = false;
 
@@ -367,6 +485,7 @@ ${applyBlock}
         meshSkippedNoUv2: 0,
         meshSkippedNonStd: 0,
         meshWithLightMap: 0,
+        meshSkippedNoAtlas: 0,
         materialsWithLightMap: 0,
       };
 
@@ -388,6 +507,15 @@ ${applyBlock}
 
         stats.meshWithUv2 += 1;
 
+        const baseName = lightmapImageBaseForMesh(child);
+        const entry = pack.get(baseName);
+        if (!entry || !entry.lightMap) {
+          stats.meshSkippedNoAtlas += 1;
+          return;
+        }
+        const lightMap = entry.lightMap;
+        const aoMap = entry.aoMap || null;
+
         const orig = child.material;
         const list = Array.isArray(orig) ? orig : [orig];
         let appliedThisMesh = false;
@@ -395,7 +523,8 @@ ${applyBlock}
           if (!(m instanceof THREE.MeshStandardMaterial)) {
             return m;
           }
-          let nm = cloneFor.get(m);
+          const mapKey = `${m.uuid}:${baseName}`;
+          let nm = cloneFor.get(mapKey);
           if (!nm) {
             nm = m.clone();
             nm.lightMap = lightMap;
@@ -405,7 +534,7 @@ ${applyBlock}
               nm.aoMapIntensity = CONFIG.aoMapIntensity;
             }
             nm.needsUpdate = true;
-            cloneFor.set(m, nm);
+            cloneFor.set(mapKey, nm);
             stats.materialsWithLightMap += 1;
           }
           appliedThisMesh = true;
@@ -424,93 +553,58 @@ ${applyBlock}
       return stats;
     }
 
-    const gltfLoader = new GLTFLoader();
-    const linearSpace = THREE.LinearSRGBColorSpace;
-
-    async function bootstrap() {
-      let lightMapTex = null;
-      let aoTex = null;
-
-      const debugState = {
-        lightMap: {
-          ok: false,
-          url: CONFIG.lightMapUrl,
-          size: "",
-          error: "",
-        },
-        ao: {
-          ok: false,
-          skipped: !CONFIG.aoMapUrl,
-          url: CONFIG.aoMapUrl || "",
-          size: "",
-          error: "",
-        },
-        apply: null,
+    function countMeshUvStats(root) {
+      const stats = {
+        meshTotal: 0,
+        meshWithUv2: 0,
+        meshSkippedNoUv2: 0,
+        meshSkippedNonStd: 0,
+        meshWithLightMap: 0,
+        meshSkippedNoAtlas: 0,
+        materialsWithLightMap: 0,
       };
+      root.traverse((child) => {
+        if (!child.isMesh) return;
+        stats.meshTotal += 1;
+        if (!child.geometry.attributes.uv2) stats.meshSkippedNoUv2 += 1;
+        else stats.meshWithUv2 += 1;
+      });
+      return stats;
+    }
 
-      try {
-        lightMapTex = await loadTexture(CONFIG.lightMapUrl, linearSpace);
-        debugState.lightMap.ok = true;
-        debugState.lightMap.size =
-          lightMapTex.image && lightMapTex.image.width
-            ? `${lightMapTex.image.width}×${lightMapTex.image.height}`
-            : "";
-        drawLightmapPreview(lightMapTex);
-        console.info("[Lightmap] Texture loaded:", CONFIG.lightMapUrl, debugState.lightMap.size);
-      } catch (e) {
-        debugState.lightMap.ok = false;
-        debugState.lightMap.error = e && e.message ? e.message : String(e);
-        console.warn(
-          "[Lightmap] Could not load lightMapUrl — place baked PNG next to index or set CONFIG.lightMapUrl:",
-          CONFIG.lightMapUrl,
-          e
-        );
-      }
+    const gltfLoader = new GLTFLoader();
 
-      if (CONFIG.aoMapUrl) {
-        try {
-          aoTex = await loadTexture(CONFIG.aoMapUrl, linearSpace);
-          debugState.ao.ok = true;
-          debugState.ao.skipped = false;
-          debugState.ao.size =
-            aoTex.image && aoTex.image.width
-              ? `${aoTex.image.width}×${aoTex.image.height}`
-              : "";
-          console.info("[Lightmap] AO loaded:", CONFIG.aoMapUrl, debugState.ao.size);
-        } catch (e) {
-          debugState.ao.ok = false;
-          debugState.ao.error = e && e.message ? e.message : String(e);
-          console.warn("[Lightmap] AO optional — failed to load:", CONFIG.aoMapUrl, e);
-        }
-      }
-
-      renderLightmapDebugPanel(debugState);
-
+    function bootstrap() {
       gltfLoader.load(
         CONFIG.glbUrl,
-        (gltf) => {
-          scene.add(gltf.scene);
-          applySceneLightsEnabled(CONFIG.enableSceneLights, gltf.scene);
-          if (lightMapTex) {
-            debugState.apply = applyBakedMaps(gltf.scene, lightMapTex, aoTex);
-            console.info("[Lightmap] Apply stats:", debugState.apply);
-          } else {
-            debugState.apply = {
-              meshTotal: 0,
-              meshWithUv2: 0,
-              meshSkippedNoUv2: 0,
-              meshSkippedNonStd: 0,
-              meshWithLightMap: 0,
-              materialsWithLightMap: 0,
-            };
-            gltf.scene.traverse((c) => {
-              if (!c.isMesh) return;
-              debugState.apply.meshTotal += 1;
-              if (!c.geometry.attributes.uv2) debugState.apply.meshSkippedNoUv2 += 1;
-              else debugState.apply.meshWithUv2 += 1;
+        async (gltf) => {
+          try {
+            scene.add(gltf.scene);
+            applySceneLightsEnabled(CONFIG.enableSceneLights, gltf.scene);
+
+            const bases = collectLightmapBasesFromScene(gltf.scene);
+            const { pack, diagnostics } = await loadLightmapPackForBases(bases);
+            const anyDiffuseLoaded = pack.size > 0;
+
+            if (anyDiffuseLoaded) {
+              const first = pack.values().next().value;
+              if (first?.lightMap) drawLightmapPreview(first.lightMap);
+            }
+
+            const apply = anyDiffuseLoaded
+              ? applyBakedMapsFromPack(gltf.scene, pack)
+              : countMeshUvStats(gltf.scene);
+
+            console.info("[Lightmap] atlas bases", bases, "loaded", pack.size, "apply", apply);
+
+            renderLightmapDebugPanel({
+              diagnostics,
+              anyDiffuseLoaded,
+              apply,
             });
+          } catch (err) {
+            console.error("[Lightmap] After GLB load:", err);
           }
-          renderLightmapDebugPanel(debugState);
         },
         undefined,
         (error) => {
