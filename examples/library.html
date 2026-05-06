@@ -139,6 +139,8 @@
       glbUrl:
       "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
         //"./library.glb",
+      /** Global world/model scale (1 = authored size). */
+      worldScale: 1.50,
       /** Same as AutoLightmap.py IMAGE_NAME */
       IMAGE_NAME: "LightmapAtlas",
       /** Prefix URL/folder for baked textures */
@@ -180,7 +182,7 @@
       /** Scales HDRI contribution on MeshStandardMaterial (reflections / indirect spec). */
       iblEnvMapIntensity: 1.2,
       /** Camera-mounted flashlight. */
-      enableFlashlight: true,
+      enableFlashlight: false,
       flashlightIntensity: 50,
       /** Blender Directional Light Euler rotation (degrees). */
       blenderDirectionalEulerDeg: [-28.061, 38.8838, -47.3439],
@@ -263,14 +265,15 @@
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x202020);
 
-    const cameraHeight = 1.6;
+    const S = Math.max(0.0001, Number(CONFIG.worldScale) || 1);
+    const cameraHeight = 1.6 * S;
     const camera = new THREE.PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
       0.1,
       1000
     );
-    camera.position.set(0, cameraHeight, 5);
+    camera.position.set(0, cameraHeight, 5 * S);
     scene.add(camera);
 
     const renderer = new THREE.WebGLRenderer({
@@ -367,7 +370,7 @@
       CONFIG.blenderDirectionalEulerDeg,
       CONFIG.blenderEulerOrder
     );
-    const sunDistance = 50;
+    const sunDistance = 50 * S;
     directionalLight.position.copy(sunDirection).multiplyScalar(-sunDistance);
     directionalLight.target.position.set(0, 0, 0);
     scene.add(directionalLight);
@@ -376,7 +379,7 @@
     const flashlight = new THREE.SpotLight(
       0xffffff,
       CONFIG.flashlightIntensity,
-      35,
+      35 * S,
       Math.PI / 9,
       0.35,
       1.2
@@ -746,6 +749,7 @@ ${applyBlock}
         async (gltf) => {
           try {
             scene.add(gltf.scene);
+            gltf.scene.scale.setScalar(S);
             applySceneLightsEnabled(CONFIG.enableSceneLights, gltf.scene);
             if (CONFIG.enableLightMaps && CONFIG.suppressRealtimeDiffuseForBakedLightmaps) {
               gltf.scene.traverse((o) => {
@@ -905,7 +909,7 @@ ${applyBlock}
       updateMovement();
       if (CONFIG.enableFlashlight) {
         camera.getWorldDirection(cameraLookDir);
-        flashlightTarget.position.copy(camera.position).add(cameraLookDir.multiplyScalar(12));
+        flashlightTarget.position.copy(camera.position).add(cameraLookDir.multiplyScalar(12 * S));
         flashlightTarget.updateMatrixWorld();
       }
       renderer.render(scene, camera);
