@@ -150,9 +150,9 @@
       lightMapIntensity: 1.0,
       aoMapIntensity: 1.0,
       /** Ambient + HDRI fill (hybrid with baked lightmap). */
-      ambientIntensity: 0.38,
+      ambientIntensity: 0.3,
       /** Key light; raised for clearer sun/spec with HDRI IBL. */
-      directionalIntensity: 1.55,
+      directionalIntensity: 0.5,
       /**
        * Debug-only second ambient: always active, NOT affected by enableSceneLights.
        * Use ~0.1 to verify lightmap contribution when “real” lights are off. Set to 0 to remove.
@@ -720,7 +720,7 @@ ${applyBlock}
     bindButton("left", "left");
     bindButton("right", "right");
 
-    const speed = 0.08;
+    const speed = 0.04;
     const forwardVec = new THREE.Vector3();
     const rightVec = new THREE.Vector3();
     const upAxis = new THREE.Vector3(0, 1, 0);
