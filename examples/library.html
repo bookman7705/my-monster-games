@@ -159,7 +159,7 @@
        */
       debugAmbientIntensity: 0,
       /** On-screen panel: load status, UV2 stats, lightmap thumbnail. Set false to hide. */
-      showLightmapDebugUI: true,
+      showLightmapDebugUI: false,
       /** Equirect .hdr beside this file — PMREM → scene.environment only (IBL / reflections, not sky). */
       environmentHdrUrl: "./aerodynamics_workshop_1k.hdr",
       /** ACES exposure (HDR + sun). */
@@ -228,6 +228,7 @@
       1000
     );
     camera.position.set(0, cameraHeight, 5);
+    scene.add(camera);
 
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -286,6 +287,19 @@
     scene.add(directionalLight);
     scene.add(directionalLight.target);
 
+    // Flashlight mounted to the camera: follows movement and points where camera looks.
+    const flashlight = new THREE.SpotLight(0xffffff, 105, 32, Math.PI / 7, 0.35, 1.25);
+    flashlight.name = "CameraFlashlight";
+    flashlight.userData.baseIntensity = flashlight.intensity;
+    flashlight.castShadow = false;
+    flashlight.position.set(0, 0, 0);
+    camera.add(flashlight);
+
+    const flashlightTarget = new THREE.Object3D();
+    flashlightTarget.position.set(0, 0, -8);
+    camera.add(flashlightTarget);
+    flashlight.target = flashlightTarget;
+
     const debugAmbientLight = new THREE.AmbientLight(
       0xffffff,
       CONFIG.debugAmbientIntensity
@@ -305,6 +319,7 @@
 
       applyOne(ambientLight);
       applyOne(directionalLight);
+      applyOne(flashlight);
 
       if (root) {
         root.traverse((o) => {
