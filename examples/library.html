@@ -137,42 +137,64 @@
      */
     const CONFIG = {
       glbUrl:
-        "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
+      "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
+        //"./library.glb",
       /** Same as AutoLightmap.py IMAGE_NAME */
       IMAGE_NAME: "LightmapAtlas",
       /** Prefix URL/folder for baked textures */
       lightmapTextureBasePath: "./",
       /** Tried in order per base name */
       textureExtensions: [".png", ".jpg", ".jpeg", ".webp"],
+      /** Toggle baked GI lightmap loading/application. */
+      enableLightMaps: true,
       loadAoMaps: true,
       /** When false, scene lights are off (lightmap / emissive-only look). Toggle to true for dynamic lighting + spec. */
       enableSceneLights: true,
-      lightMapIntensity: 1.0,
-      aoMapIntensity: 1.0,
+      lightMapIntensity: 3.0,
+      aoMapIntensity: 0.5,
       /** Ambient + HDRI fill (hybrid with baked lightmap). */
-      ambientIntensity: 0.3,
-      /** Key light; raised for clearer sun/spec with HDRI IBL. */
-      directionalIntensity: 0.5,
+      ambientIntensity: 0.75,
+      /** Key light; ignored when suppressRealtimeDiffuseForBakedLightmaps (see below). */
+      directionalIntensity: 1.1,
       /**
-       * Debug-only second ambient: always active, NOT affected by enableSceneLights.
+       * Debug-only second ambient: respects enableSceneLights (see applySceneLightsEnabled).
        * Use ~0.1 to verify lightmap contribution when “real” lights are off. Set to 0 to remove.
        */
-      debugAmbientIntensity: 0,
+      debugAmbientIntensity: 0.0,
+      /**
+       * Three.js adds lightMap to indirect irradiance only; DirectionalLight + AmbientLight add
+       * diffuse without shadowing, which erases dark areas baked into the lightmap. When lightmaps
+       * are on, default to a tiny fill ambient and no directional sun unless you add shadow maps.
+       */
+      suppressRealtimeDiffuseForBakedLightmaps: false,
+      /** Used only when enableLightMaps && suppressRealtimeDiffuseForBakedLightmaps */
+      bakedFillAmbient: 0.06,
       /** On-screen panel: load status, UV2 stats, lightmap thumbnail. Set false to hide. */
       showLightmapDebugUI: false,
+      /** Toggle HDR environment lighting/reflections. */
+      useHdr: false,
       /** Equirect .hdr beside this file — PMREM → scene.environment only (IBL / reflections, not sky). */
-      environmentHdrUrl: "./aerodynamics_workshop_1kcccc.hdr",
+      environmentHdrUrl: "./aerodynamics_workshop_1k.hdr",
       /** ACES exposure (HDR + sun). */
       toneMappingExposure: 0.92,
       /** Scales HDRI contribution on MeshStandardMaterial (reflections / indirect spec). */
       iblEnvMapIntensity: 1.2,
+      /** Camera-mounted flashlight. */
+      enableFlashlight: true,
+      flashlightIntensity: 50,
+      /** Blender Directional Light Euler rotation (degrees). */
+      blenderDirectionalEulerDeg: [-28.061, 38.8838, -47.3439],
+      /** Blender Euler order used for the values above. */
+      blenderEulerOrder: "XYZ",
+      /** Blender light forward axis ("-Z" for Sun/Spot/Area, "-Y" for some rigs). */
+      blenderLightForwardAxis: "-Z",
     };
 
     const linearSpace = THREE.LinearSRGBColorSpace;
 
     /** Mirrors AutoLightmap.py `sanitize_name`. */
     function sanitizeName(name) {
-      const s = String(name).trim().replace(/[^A-Za-z0-9._-]+/g, "_");
+      const s = String(name).trim().replace(/[^A-Za-z0-9_-]+/g, "_");
       return s || "Group";
     }
 
@@ -203,6 +225,27 @@
       folder = folder.replace(/\/+$/, "");
       const prefix = folder.length ? `${folder}/` : "";
       return CONFIG.textureExtensions.map((ext) => `${prefix}${stem}${ext}`);
+    }
+
+    /**
+     * Some pipelines export numbered names as Cube001, Cube.001, or Cube_001.
+     * Try all common variants so GI files still resolve.
+     */
+    function candidateStemVariants(stem) {
+      const set = new Set([stem]);
+      const m = String(stem).match(/^(.*?)([A-Za-z]+)(\d{3})$/);
+      if (m) {
+        const [, prefix, head, digits] = m;
+        set.add(`${prefix}${head}.${digits}`);
+        set.add(`${prefix}${head}_${digits}`);
+        // Fallback for scenes where only a shared non-numbered atlas exists.
+        set.add(`${prefix}${head}`);
+      }
+      return Array.from(set);
+    }
+
+    function stemFromUrl(url) {
+      return String(url).replace(/^.*\//, "").replace(/\.[^./?#]+(?:[?#].*)?$/, "");
     }
 
     function formatTextureLoadError(url, err) {
@@ -247,6 +290,7 @@
     pmremGenerator.compileEquirectangularShader();
 
     function loadHdrEnvironment() {
+      if (!CONFIG.useHdr) return Promise.resolve();
       const url = String(CONFIG.environmentHdrUrl || "").trim();
       if (!url) return Promise.resolve();
 
@@ -274,40 +318,82 @@
       });
     }
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, CONFIG.ambientIntensity);
-    ambientLight.userData.baseIntensity = CONFIG.ambientIntensity;
+    /**
+     * GLB/glTF import already converts Blender basis to Three.js basis.
+     * Treat incoming Euler values as Three-space and convert directly.
+     */
+    function blenderEulerDegToThreeQuaternion(xDeg, yDeg, zDeg, order = "XYZ") {
+      const eulerThree = new THREE.Euler(
+        THREE.MathUtils.degToRad(xDeg),
+        THREE.MathUtils.degToRad(yDeg),
+        THREE.MathUtils.degToRad(zDeg),
+        order
+      );
+      return new THREE.Quaternion().setFromEuler(eulerThree).normalize();
+    }
+
+    /**
+     * DirectionalLight points along local -Z in Three.js.
+     */
+    function blenderLightDirectionToThree(eulerDeg, order = "XYZ") {
+      const [xDeg, yDeg, zDeg] = eulerDeg;
+      const qThree = blenderEulerDegToThreeQuaternion(xDeg, yDeg, zDeg, order);
+      return new THREE.Vector3(0, 0, -1).applyQuaternion(qThree).normalize();
+    }
+
+    function resolveDiffuseLightLevels() {
+      if (CONFIG.enableLightMaps && CONFIG.suppressRealtimeDiffuseForBakedLightmaps) {
+        return {
+          ambient: Math.max(0, Number(CONFIG.bakedFillAmbient) || 0),
+          directional: 0,
+          debug: 0,
+        };
+      }
+      return {
+        ambient: CONFIG.ambientIntensity,
+        directional: CONFIG.directionalIntensity,
+        debug: CONFIG.debugAmbientIntensity,
+      };
+    }
+
+    const L0 = resolveDiffuseLightLevels();
+    const ambientLight = new THREE.AmbientLight(0xffffff, L0.ambient);
+    ambientLight.userData.baseIntensity = L0.ambient;
     scene.add(ambientLight);
 
-    const directionalLight = new THREE.DirectionalLight(0xffffff, CONFIG.directionalIntensity);
-    directionalLight.userData.baseIntensity = CONFIG.directionalIntensity;
-    const sunDirection = new THREE.Vector3(0.85340573, -0.3994638, 0.3348542).normalize();
+    const directionalLight = new THREE.DirectionalLight(0xffffff, L0.directional);
+    directionalLight.userData.baseIntensity = L0.directional;
+    const sunDirection = blenderLightDirectionToThree(
+      CONFIG.blenderDirectionalEulerDeg,
+      CONFIG.blenderEulerOrder
+    );
     const sunDistance = 50;
     directionalLight.position.copy(sunDirection).multiplyScalar(-sunDistance);
     directionalLight.target.position.set(0, 0, 0);
     scene.add(directionalLight);
     scene.add(directionalLight.target);
 
-    // Flashlight mounted to the camera: follows movement and points where camera looks.
-    const flashlight = new THREE.SpotLight(0xffffff, 105, 32, Math.PI / 7, 0.35, 1.25);
-    flashlight.name = "CameraFlashlight";
-    flashlight.userData.baseIntensity = flashlight.intensity;
-    flashlight.castShadow = false;
+    const flashlight = new THREE.SpotLight(
+      0xffffff,
+      CONFIG.flashlightIntensity,
+      35,
+      Math.PI / 9,
+      0.35,
+      1.2
+    );
+    flashlight.visible = !!CONFIG.enableFlashlight;
     flashlight.position.set(0, 0, 0);
     camera.add(flashlight);
-
     const flashlightTarget = new THREE.Object3D();
-    flashlightTarget.position.set(0, 0, -8);
-    camera.add(flashlightTarget);
+    scene.add(flashlightTarget);
     flashlight.target = flashlightTarget;
 
-    const debugAmbientLight = new THREE.AmbientLight(
-      0xffffff,
-      CONFIG.debugAmbientIntensity
-    );
+    const debugAmbientLight = new THREE.AmbientLight(0xffffff, L0.debug);
+    debugAmbientLight.userData.baseIntensity = L0.debug;
     debugAmbientLight.name = "DebugAmbientFill";
     scene.add(debugAmbientLight);
 
-    /** Applies CONFIG.enableSceneLights to ambient, directional, and any lights under `root` (e.g. GLB). */
+    /** Applies CONFIG.enableSceneLights to ambient, directional, debug fill, and any lights under `root` (e.g. GLB). */
     function applySceneLightsEnabled(enabled, root = null) {
       const applyOne = (light) => {
         if (light.userData.baseIntensity === undefined) {
@@ -319,7 +405,7 @@
 
       applyOne(ambientLight);
       applyOne(directionalLight);
-      applyOne(flashlight);
+      applyOne(debugAmbientLight);
 
       if (root) {
         root.traverse((o) => {
@@ -490,10 +576,11 @@ ${applyBlock}
       const pack = new Map();
       const diagnostics = [];
       for (const baseName of bases) {
-        const diffUrls = candidateUrlsForStem(baseName);
+        const diffUrls = candidateStemVariants(baseName).flatMap((s) => candidateUrlsForStem(s));
         let diffuseOk = false;
         let diffuseUrl = "";
         let diffuseErr = "";
+        let resolvedBaseStem = baseName;
         let lightMap = null;
         let aoOk = false;
         let aoUrl = "";
@@ -503,13 +590,14 @@ ${applyBlock}
           const r = await loadTextureFirstMatch(diffUrls, linearSpace);
           lightMap = r.tex;
           diffuseUrl = r.url;
+          resolvedBaseStem = stemFromUrl(r.url);
           diffuseOk = true;
         } catch (e) {
           diffuseErr = e instanceof Error ? e.message : String(e);
         }
         if (CONFIG.loadAoMaps && diffuseOk) {
-          const aoStem = `${baseName}_AO`;
-          const aoUrls = candidateUrlsForStem(aoStem);
+          const aoStem = `${resolvedBaseStem}_AO`;
+          const aoUrls = candidateStemVariants(aoStem).flatMap((s) => candidateUrlsForStem(s));
           try {
             const r = await loadTextureFirstMatch(aoUrls, linearSpace);
             aoMap = r.tex;
@@ -652,7 +740,6 @@ ${applyBlock}
     }
 
     const gltfLoader = new GLTFLoader();
-
     function bootstrap() {
       gltfLoader.load(
         CONFIG.glbUrl,
@@ -660,11 +747,23 @@ ${applyBlock}
           try {
             scene.add(gltf.scene);
             applySceneLightsEnabled(CONFIG.enableSceneLights, gltf.scene);
+            if (CONFIG.enableLightMaps && CONFIG.suppressRealtimeDiffuseForBakedLightmaps) {
+              gltf.scene.traverse((o) => {
+                if (!o.isLight) return;
+                if (o.userData.baseIntensity === undefined) {
+                  o.userData.baseIntensity = o.intensity;
+                }
+                o.intensity = 0;
+                o.visible = false;
+              });
+            }
             traverseMeshesEnsureLightmapUv2(gltf.scene);
 
             const bases = collectLightmapBasesFromScene(gltf.scene);
-            const { pack, diagnostics } = await loadLightmapPackForBases(bases);
-            const anyDiffuseLoaded = pack.size > 0;
+            const { pack, diagnostics } = CONFIG.enableLightMaps
+              ? await loadLightmapPackForBases(bases)
+              : { pack: new Map(), diagnostics: [] };
+            const anyDiffuseLoaded = CONFIG.enableLightMaps && pack.size > 0;
 
             if (anyDiffuseLoaded) {
               const first = pack.values().next().value;
@@ -724,6 +823,7 @@ ${applyBlock}
     const forwardVec = new THREE.Vector3();
     const rightVec = new THREE.Vector3();
     const upAxis = new THREE.Vector3(0, 1, 0);
+    const cameraLookDir = new THREE.Vector3();
 
     function updateMovement() {
       camera.getWorldDirection(forwardVec);
@@ -744,18 +844,43 @@ ${applyBlock}
       camera.position.y = cameraHeight;
     }
 
-    let yaw = 0;
-    let pitch = 0;
-    let smoothYaw = 0;
-    let smoothPitch = 0;
-    let baseAlpha = null;
+    const deviceEuler = new THREE.Euler();
+    const deviceQuatTarget = new THREE.Quaternion();
+    const deviceQuatSmooth = new THREE.Quaternion();
+    const screenAdjustQuat = new THREE.Quaternion();
+    const screenAxisZ = new THREE.Vector3(0, 0, 1);
+    // Align device camera frame to world frame (same approach as DeviceOrientationControls).
+    const deviceToCameraQuat = new THREE.Quaternion(
+      -Math.sqrt(0.5),
+      0,
+      0,
+      Math.sqrt(0.5)
+    );
+    let hasDeviceOrientation = false;
 
     function handleOrientation(e) {
-      if (e.alpha === null) return;
-      if (baseAlpha === null) baseAlpha = e.alpha;
-      yaw = THREE.MathUtils.degToRad(e.alpha - baseAlpha);
-      pitch = THREE.MathUtils.degToRad(e.beta - 90);
-      pitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, pitch));
+      if (e.alpha == null || e.beta == null || e.gamma == null) return;
+
+      const alpha = THREE.MathUtils.degToRad(e.alpha);
+      const beta = THREE.MathUtils.degToRad(e.beta);
+      const gamma = THREE.MathUtils.degToRad(e.gamma);
+      const screenAngleDeg =
+        window.screen?.orientation?.angle ?? window.orientation ?? 0;
+      const screenAngle = THREE.MathUtils.degToRad(screenAngleDeg);
+
+      // Intrinsic Z-X'-Y'' device angles mapped to world quaternion.
+      deviceEuler.set(beta, alpha, -gamma, "YXZ");
+      deviceQuatTarget.setFromEuler(deviceEuler);
+      deviceQuatTarget.multiply(deviceToCameraQuat);
+
+      // Compensate for current screen orientation so tilt remains stable in portrait/landscape.
+      screenAdjustQuat.setFromAxisAngle(screenAxisZ, -screenAngle);
+      deviceQuatTarget.multiply(screenAdjustQuat);
+
+      if (!hasDeviceOrientation) {
+        deviceQuatSmooth.copy(deviceQuatTarget);
+        hasDeviceOrientation = true;
+      }
     }
 
     document.getElementById("startBtn").onclick = async () => {
@@ -767,19 +892,22 @@ ${applyBlock}
       document.getElementById("startBtn").style.display = "none";
     };
 
-    const smoothing = 0.1;
+    const rotationSmoothing = 0.12;
     function updateCameraRotation() {
-      smoothYaw += (yaw - smoothYaw) * smoothing;
-      smoothPitch += (pitch - smoothPitch) * smoothing;
-      camera.rotation.order = "YXZ";
-      camera.rotation.y = smoothYaw;
-      camera.rotation.x = smoothPitch;
+      if (!hasDeviceOrientation) return;
+      deviceQuatSmooth.slerp(deviceQuatTarget, rotationSmoothing);
+      camera.quaternion.copy(deviceQuatSmooth);
     }
 
     function animate() {
       requestAnimationFrame(animate);
       updateCameraRotation();
       updateMovement();
+      if (CONFIG.enableFlashlight) {
+        camera.getWorldDirection(cameraLookDir);
+        flashlightTarget.position.copy(camera.position).add(cameraLookDir.multiplyScalar(12));
+        flashlightTarget.updateMatrixWorld();
+      }
       renderer.render(scene, camera);
     }
     animate();
