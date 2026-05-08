@@ -99,9 +99,9 @@ scene.add(sun);
 const ambient = new THREE.AmbientLight(0x88aaff, 0.4);
 scene.add(ambient);
 
-// ---------- CLOUD LAYER (fake volumetric sprites) ----------
-const cloudTex = new THREE.TextureLoader().load(
-  "https://threejs.org/examples/textures/sprites/cloud.png"
+// ----------  LAYER (fake volumetric sprites) ----------
+const Tex = new THREE.TextureLoader().load(
+  "/cloud.png"
 );
 
 const cloudGroup = new THREE.Group();
