@@ -268,7 +268,7 @@
     const S = Math.max(0.0001, Number(CONFIG.worldScale) || 1);
     const cameraHeight = 1.6 * S;
     const camera = new THREE.PerspectiveCamera(
-      75,
+      60,
       window.innerWidth / window.innerHeight,
       0.1,
       1000
@@ -809,6 +809,8 @@ ${applyBlock}
 
     loadHdrEnvironment().then(() => bootstrap());
 
+    const clock = new THREE.Clock();
+
     const move = { forward: false, back: false, left: false, right: false };
     function bindButton(id, key) {
       const el = document.getElementById(id);
@@ -823,13 +825,14 @@ ${applyBlock}
     bindButton("left", "left");
     bindButton("right", "right");
 
-    const speed = 0.04;
+    /** Walking speed in world units per second (scales with worldScale so pace matches scene size). */
+    const walkSpeed = 1.35 * S;
     const forwardVec = new THREE.Vector3();
     const rightVec = new THREE.Vector3();
     const upAxis = new THREE.Vector3(0, 1, 0);
     const cameraLookDir = new THREE.Vector3();
 
-    function updateMovement() {
+    function updateMovement(delta) {
       camera.getWorldDirection(forwardVec);
       forwardVec.y = 0;
       forwardVec.normalize();
@@ -842,7 +845,7 @@ ${applyBlock}
       if (move.left) moveVec.addScaledVector(rightVec, -1);
 
       if (moveVec.lengthSq() > 0) {
-        moveVec.normalize().multiplyScalar(speed);
+        moveVec.normalize().multiplyScalar(walkSpeed * delta);
         camera.position.add(moveVec);
       }
       camera.position.y = cameraHeight;
@@ -905,8 +908,9 @@ ${applyBlock}
 
     function animate() {
       requestAnimationFrame(animate);
+      const dt = clock.getDelta();
       updateCameraRotation();
-      updateMovement();
+      updateMovement(dt);
       if (CONFIG.enableFlashlight) {
         camera.getWorldDirection(cameraLookDir);
         flashlightTarget.position.copy(camera.position).add(cameraLookDir.multiplyScalar(12 * S));
