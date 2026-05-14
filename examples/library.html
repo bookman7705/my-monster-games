@@ -24,6 +24,18 @@
       z-index: 10;
     }
 
+    #fullscreenBtn {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      padding: 10px 12px;
+      background: white;
+      border: none;
+      cursor: pointer;
+      z-index: 10;
+      -webkit-tap-highlight-color: transparent;
+    }
+
     #controls {
       position: absolute;
       bottom: 20px;
@@ -102,6 +114,7 @@
 </head>
 <body>
   <button id="startBtn">Enable Look</button>
+  <button type="button" id="fullscreenBtn" aria-pressed="false">Fullscreen</button>
   <div id="controls">
     <button id="forward" class="move">↑</button>
     <button id="left" class="move">←</button>
@@ -826,7 +839,7 @@ ${applyBlock}
     bindButton("right", "right");
 
     /** Walking speed in world units per second (scales with worldScale so pace matches scene size). */
-    const walkSpeed = 1.35 * S;
+    const walkSpeed = 2.025 * S;
     const forwardVec = new THREE.Vector3();
     const rightVec = new THREE.Vector3();
     const upAxis = new THREE.Vector3(0, 1, 0);
@@ -899,6 +912,56 @@ ${applyBlock}
       document.getElementById("startBtn").style.display = "none";
     };
 
+    const fullscreenBtn = document.getElementById("fullscreenBtn");
+
+    function getFullscreenElement() {
+      return (
+        document.fullscreenElement ??
+        document.webkitFullscreenElement ??
+        document.mozFullScreenElement ??
+        document.msFullscreenElement ??
+        null
+      );
+    }
+
+    function syncFullscreenButton() {
+      const active = !!getFullscreenElement();
+      fullscreenBtn.textContent = active ? "Exit fullscreen" : "Fullscreen";
+      fullscreenBtn.setAttribute("aria-pressed", active ? "true" : "false");
+    }
+
+    function requestFullscreenForPage() {
+      const el = document.documentElement;
+      if (el.requestFullscreen) return el.requestFullscreen();
+      if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
+      if (el.mozRequestFullScreen) return el.mozRequestFullScreen();
+      if (el.msRequestFullscreen) return el.msRequestFullscreen();
+      return Promise.reject(new Error("Fullscreen not supported"));
+    }
+
+    function exitFullscreenPage() {
+      const exit =
+        document.exitFullscreen ??
+        document.webkitExitFullscreen ??
+        document.mozCancelFullScreen ??
+        document.msExitFullscreen;
+      if (!exit) return Promise.reject(new Error("Exit fullscreen not supported"));
+      return exit.call(document);
+    }
+
+    fullscreenBtn.addEventListener("click", () => {
+      if (getFullscreenElement()) {
+        exitFullscreenPage().catch(() => {});
+      } else {
+        requestFullscreenForPage().catch(() => {});
+      }
+    });
+
+    document.addEventListener("fullscreenchange", syncFullscreenButton);
+    document.addEventListener("webkitfullscreenchange", syncFullscreenButton);
+    document.addEventListener("mozfullscreenchange", syncFullscreenButton);
+    document.addEventListener("MSFullscreenChange", syncFullscreenButton);
+
     const rotationSmoothing = 0.12;
     function updateCameraRotation() {
       if (!hasDeviceOrientation) return;
@@ -920,12 +983,18 @@ ${applyBlock}
     }
     animate();
 
-    window.addEventListener("resize", () => {
+    function refreshRendererSize() {
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.setSize(window.innerWidth, window.innerHeight);
-    });
+    }
+
+    window.addEventListener("resize", refreshRendererSize);
+    document.addEventListener("fullscreenchange", refreshRendererSize);
+    document.addEventListener("webkitfullscreenchange", refreshRendererSize);
+    document.addEventListener("mozfullscreenchange", refreshRendererSize);
+    document.addEventListener("MSFullscreenChange", refreshRendererSize);
   </script>
 </body>
 </html>
