@@ -140,7 +140,7 @@
       "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/Library.glb",
         //"./library.glb",
       /** Global world/model scale (1 = authored size). */
-      worldScale: 200,
+      worldScale: 1,
       /** Same as AutoLightmap.py IMAGE_NAME */
       IMAGE_NAME: "LightmapAtlas",
       /** Prefix URL/folder for baked textures */
@@ -266,7 +266,7 @@
     scene.background = new THREE.Color(0x202020);
 
     const S = Math.max(0.0001, Number(CONFIG.worldScale) || 1);
-    const cameraHeight = 1.6;
+    const cameraHeight = 1.6 * S;
     const camera = new THREE.PerspectiveCamera(
       60,
       window.innerWidth / window.innerHeight,
