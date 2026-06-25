@@ -20,12 +20,6 @@ import { MindARThree } from 'mindar-image-three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 /* =====================
-   SMOOTHING SETTINGS
-===================== */
-const POSITION_SMOOTH = 0.08;
-const ROTATION_SMOOTH = 0.08;
-
-/* =====================
    MINDAR SETUP
 ===================== */
 const mindarThree = new MindARThree({
@@ -44,9 +38,9 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
 ===================== */
 const anchor = mindarThree.addAnchor(0);
 
-/* Smoothed model group attached directly to the anchor */
-const smoothedGroup = new THREE.Group();
-anchor.group.add(smoothedGroup);
+/* Direct model group attached to anchor (NO smoothing layer) */
+const modelGroup = new THREE.Group();
+anchor.group.add(modelGroup);
 
 /* =====================
    LIGHTING
@@ -66,13 +60,12 @@ loader.load(
   "https://raw.githubusercontent.com/bookman7705/my-monster-games/main/rex.glb",
   (gltf) => {
     const model = gltf.scene;
-    model.scale.set(1, 1,1);
-    model.rotation.set(Math.PI/2, 0, 0);
 
-    /* initially at origin of smoothed group */
-    model.position.set(0,0,0);
+    model.scale.set(0.1, 0.1, 0.1);
+    model.rotation.set(Math.PI / 2, 0, 0);
 
-    smoothedGroup.add(model);
+    /* attach directly */
+    modelGroup.add(model);
 
     if (gltf.animations.length > 0) {
       mixer = new THREE.AnimationMixer(model);
@@ -96,14 +89,12 @@ const start = async () => {
 
   renderer.setAnimationLoop(() => {
     const delta = clock.getDelta();
-    if(mixer) mixer.update(delta);
+    if (mixer) mixer.update(delta);
 
-    /* Smooth the model relative to the anchor's local origin */
-    smoothedGroup.position.lerp(new THREE.Vector3(0,0,0), POSITION_SMOOTH);
-
-    const targetQuat = new THREE.Quaternion(); // identity rotation
-    smoothedGroup.quaternion.slerp(targetQuat, ROTATION_SMOOTH);
-
+    /* ❌ SMOOTHING REMOVED:
+       no lerp, no slerp, no interpolation
+       anchor drives model directly */
+       
     renderer.render(scene, camera);
   });
 };
@@ -112,6 +103,7 @@ const start = async () => {
    BUTTONS
 ===================== */
 document.querySelector("#startButton").addEventListener("click", start);
+
 document.querySelector("#stopButton").addEventListener("click", () => {
   mindarThree.stop();
   renderer.setAnimationLoop(null);
