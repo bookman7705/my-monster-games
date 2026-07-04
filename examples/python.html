@@ -1,0 +1,2288 @@
+"""
+AutoLightmapv5.py — Blender 4.1
+
+Per-mesh indirect-diffuse lightmaps using a proxy bake workflow.
+Original meshes are never modified during baking; LightMap UVs are transferred
+from the proxy after each successful bake.
+
+Bake settings and UV packing parameters are read from Lightmap Baker profiles
+assigned to each mesh object (scene.lightmap_bake_profiles / object.lightmap_profile).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import time
+import traceback
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+import bpy
+from mathutils import Vector
+
+# Ensure the project folder is importable when run as a Text Editor script.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
+try:
+    from lightmap_baker.utils import iter_objects_with_profile
+except ImportError as exc:
+    raise ImportError(
+        "Lightmap Baker add-on module not found. Enable the add-on and ensure "
+        "lightmap_baker is on Blender's Python path."
+    ) from exc
+
+# --------------------------------------------------
+# CONFIG (non-profile constants)
+# --------------------------------------------------
+
+OUTPUT_DIR = r"C:\Users\Afrom\Documents\Blender\lightmaps"
+
+LIGHTMAP_RESOLUTION = 1024
+LIGHTMAP_UV_NAME = "LightMap"
+LIGHTMAP_UV_INDEX = 1
+LIGHTMAP_UV_CHANNEL = 1
+
+MANIFEST_FILENAME = "lightmap_manifest.json"
+GENERATOR_NAME = "AutoLightmapv5.py"
+
+PROXY_PREFIX = "__LM_COLOR1_PROXY__"
+BAKE_MAT_PREFIX = "__LM_COLOR1_BAKE_MAT__"
+BAKE_IMAGE_NODE_NAME = "__LM_COLOR1_BAKE_IMAGE__"
+
+USE_GPU_BAKE = True
+CYCLES_COMPUTE_DEVICE = ""
+COMPUTE_DEVICE_PRIORITY = ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI")
+_AMD_GPU_MARKERS = ("AMD", "RADEON", "RX ")
+
+LOG_PREFIX = "[LIGHTMAP-V5]"
+UV_VALIDATE_EPSILON = 1e-4
+UV_OUT_OF_BOUNDS_TOLERANCE = 0.02
+
+# Object custom property: when "False" (case-insensitive), keep existing LightMap UV.
+PROP_OVERWRITE_LIGHTMAP = "Ovewrite_LightMap"
+PROP_OVERWRITE_LIGHTMAP_ALIASES = (
+    PROP_OVERWRITE_LIGHTMAP,
+    "Overwrite_LightMap",
+    "overwrite_lightmap",
+)
+PROP_LIGHTMAP_NEUTRAL_ALBEDO = "lightmap_neutral_albedo"
+
+
+# --------------------------------------------------
+# LOGGING
+# --------------------------------------------------
+
+
+def log_info(message: str) -> None:
+    print(f"{LOG_PREFIX} {message}")
+
+
+def log_warn(message: str) -> None:
+    print(f"{LOG_PREFIX} WARNING: {message}")
+
+
+def log_error(message: str) -> None:
+    print(f"{LOG_PREFIX} ERROR: {message}")
+
+
+def log_section(title: str) -> None:
+    bar = "=" * 30
+    print(f"{LOG_PREFIX} {bar}")
+    print(f"{LOG_PREFIX} {title}")
+    print(f"{LOG_PREFIX} {bar}")
+
+
+def format_duration(seconds: float) -> str:
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    return f"{minutes:02d}:{secs:02d}"
+
+
+# --------------------------------------------------
+# BAKE PROFILE INTEGRATION
+# --------------------------------------------------
+
+
+@dataclass
+class ProfileBakeStats:
+    profile_name: str
+    objects_processed: int = 0
+    objects_baked: int = 0
+    objects_skipped: int = 0
+    objects_failed: int = 0
+    triangles: int = 0
+    uv_islands: int = 0
+    atlas_fill_percent: float = 0.0
+    pack_efficiency: float = 0.0
+    bake_seconds: float = 0.0
+    issues: list[str] = field(default_factory=list)
+
+
+def addon_profiles_available(scene) -> bool:
+    return hasattr(scene, "lightmap_bake_profiles")
+
+
+def profile_bake_settings(profile) -> dict[str, Any]:
+    """Snapshot profile bake settings as a plain dict for manifest/logging."""
+    return {
+        "noise_threshold": float(profile.noise_threshold),
+        "max_samples": int(profile.max_samples),
+        "min_samples": int(profile.min_samples),
+        "use_denoise": bool(profile.use_denoise),
+        "bake_bleed_reduction": float(profile.bake_bleed_reduction),
+        "indirect_intensity": float(profile.indirect_intensity),
+        "shadow_preserve": float(profile.shadow_preserve),
+        "enable_post_processing": bool(profile.enable_post_processing),
+        "bake_ao": bool(profile.bake_ao),
+        "ao_strength": float(profile.ao_strength),
+        "ao_samples": int(profile.ao_samples),
+        "save_ao_map": bool(profile.save_ao_map),
+        "world_ao_enabled": bool(profile.world_ao_enabled),
+        "bake_margin": int(profile.bake_margin),
+        "uv_margin_minimum": float(profile.uv_margin_minimum),
+        "uv_edge_inset": int(profile.uv_edge_inset),
+        "pack_box_division": int(profile.pack_box_division),
+    }
+
+
+def get_enabled_profiles(scene) -> list:
+    if not addon_profiles_available(scene):
+        return []
+    return [profile for profile in scene.lightmap_bake_profiles if profile.enabled]
+
+
+def collect_profile_objects(profile, scene, view_layer=None):
+    """Return mesh objects assigned to *profile* in the active view layer."""
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+
+    objects = []
+    for obj in iter_objects_with_profile(scene, profile.uuid):
+        if obj.name not in view_layer.objects:
+            continue
+        objects.append(obj)
+    return sorted(objects, key=lambda item: item.name)
+
+
+def validate_objects(objects, view_layer=None) -> tuple[list, list[tuple[str, str]]]:
+    """Split *objects* into bake candidates and skipped (name, reason) pairs."""
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+
+    valid = []
+    skipped = []
+    for obj in objects:
+        ok, reason = is_bake_candidate(obj, view_layer)
+        if ok:
+            valid.append(obj)
+        else:
+            skipped.append((obj.name, reason))
+            log_warn(f"Skipping {obj.name}: {reason}")
+    return valid, skipped
+
+
+def log_unassigned_selected_meshes(scene, view_layer=None) -> None:
+    """Log selected meshes that have no bake profile assignment."""
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+
+    for obj in get_selected_mesh_objects():
+        if obj.type != "MESH":
+            continue
+        if obj.lightmap_profile:
+            continue
+        log_warn(f"Skipped {obj.name}: No Bake Profile assigned.")
+
+
+# --------------------------------------------------
+# FUTURE HOOKS (not implemented)
+# --------------------------------------------------
+
+
+def custom_atlas_packer(_profile, _objects) -> None:
+    """TODO: Replace lightmap_pack with a custom atlas packing algorithm."""
+    raise NotImplementedError
+
+
+def multi_atlas_support(_profile, _objects) -> None:
+    """TODO: Split large profile bakes across multiple atlases."""
+    raise NotImplementedError
+
+
+def auto_atlas_resolution(_profile, _objects) -> None:
+    """TODO: Automatically choose atlas resolution from geometry."""
+    raise NotImplementedError
+
+
+def texel_density_analyzer(_profile, _objects) -> None:
+    """TODO: Analyze texel density before packing."""
+    raise NotImplementedError
+
+
+def island_rotation_optimizer(_profile, _objects) -> None:
+    """TODO: Optimize island rotation prior to packing."""
+    raise NotImplementedError
+
+
+def atlas_occupancy_report(_profile, _objects) -> None:
+    """TODO: Report atlas occupancy after packing."""
+    raise NotImplementedError
+
+
+def progressive_baking(_profile, _objects) -> None:
+    """TODO: Progressive / tiled baking for large profiles."""
+    raise NotImplementedError
+
+
+def incremental_rebuilds(_profile, _objects) -> None:
+    """TODO: Incrementally rebuild only changed profile members."""
+    raise NotImplementedError
+
+
+# --------------------------------------------------
+# PATH / NAME HELPERS
+# --------------------------------------------------
+
+
+def ensure_output_dir(path: str) -> str:
+    os.makedirs(path, exist_ok=True)
+    return os.path.abspath(path)
+
+
+def sanitize_filename(name: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name).strip())
+    cleaned = re.sub(r"\s+", "_", cleaned)
+    cleaned = cleaned.strip("._")
+    return cleaned or "Mesh"
+
+
+def json_path(path: str) -> str:
+    return os.path.abspath(path).replace("\\", "/")
+
+
+def blend_scene_name() -> str:
+    if bpy.data.filepath:
+        return os.path.splitext(os.path.basename(bpy.data.filepath))[0]
+    return bpy.path.clean_name(bpy.context.scene.name) or "Untitled"
+
+
+def lightmap_image_name(object_name: str) -> str:
+    return f"{sanitize_filename(object_name)}_LightMap"
+
+
+def lightmap_png_filename(object_name: str) -> str:
+    return f"{lightmap_image_name(object_name)}.png"
+
+
+def ao_image_name(object_name: str) -> str:
+    return f"{sanitize_filename(object_name)}_AO"
+
+
+def ao_png_filename(object_name: str) -> str:
+    return f"{ao_image_name(object_name)}.png"
+
+
+def proxy_object_name(object_name: str) -> str:
+    return f"{PROXY_PREFIX}{object_name}"
+
+
+def bake_material_name(object_name: str) -> str:
+    return f"{BAKE_MAT_PREFIX}{object_name}"
+
+
+# --------------------------------------------------
+# SCENE STATE
+# --------------------------------------------------
+
+
+def ensure_object_mode() -> None:
+    if bpy.context.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+
+
+def capture_selection_context():
+    return {
+        "selected": list(bpy.context.selected_objects),
+        "active": bpy.context.view_layer.objects.active,
+        "mode": bpy.context.mode,
+    }
+
+
+def restore_selection_context(ctx) -> None:
+    ensure_object_mode()
+    view_layer = bpy.context.view_layer
+
+    for obj in view_layer.objects:
+        obj.select_set(False)
+
+    for obj in ctx.get("selected", []):
+        if obj and obj.name in view_layer.objects:
+            obj.select_set(True)
+
+    active = ctx.get("active")
+    if active and active.name in view_layer.objects:
+        view_layer.objects.active = active
+
+
+def capture_render_state(target_scene):
+    return {
+        "engine": target_scene.render.engine,
+        "cycles_device": target_scene.cycles.device,
+    }
+
+
+def restore_render_state(target_scene, state) -> None:
+    # User spec: always return to Eevee after baking (Blender 4.1).
+    target_scene.render.engine = "BLENDER_EEVEE"
+    target_scene.cycles.device = state.get("cycles_device", "CPU")
+
+
+def get_selected_mesh_objects():
+    seen = set()
+    meshes = []
+    for obj in bpy.context.selected_objects:
+        if obj.type != "MESH" or obj.name in seen:
+            continue
+        seen.add(obj.name)
+        meshes.append(obj)
+    return sorted(meshes, key=lambda o: o.name)
+
+
+def is_mesh_in_view_layer(obj, view_layer=None) -> bool:
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+    return obj.name in view_layer.objects
+
+
+def is_mesh_visible_in_view_layer(obj, view_layer=None) -> bool:
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+    if obj.type != "MESH" or not is_mesh_in_view_layer(obj, view_layer):
+        return False
+    if obj.hide_viewport:
+        return False
+    try:
+        return bool(obj.visible_get(view_layer=view_layer))
+    except TypeError:
+        return bool(obj.visible_get())
+    except RuntimeError:
+        return True
+
+
+def is_bake_candidate(obj, view_layer=None) -> tuple[bool, str]:
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+    if obj.type != "MESH":
+        return False, "not a mesh"
+    if obj.data is None or len(obj.data.polygons) == 0:
+        return False, "mesh has no faces"
+    if not is_mesh_in_view_layer(obj, view_layer):
+        return False, "not in active view layer"
+    if not is_mesh_visible_in_view_layer(obj, view_layer):
+        return False, "hidden from view layer"
+    if obj.hide_render:
+        return False, "hidden in render"
+    return True, ""
+
+
+def select_single_object(obj) -> None:
+    ensure_object_mode()
+    view_layer = bpy.context.view_layer
+    for scene_obj in view_layer.objects:
+        scene_obj.select_set(False)
+    obj.select_set(True)
+    view_layer.objects.active = obj
+
+
+def flush_view_layer() -> None:
+    ensure_object_mode()
+    view_layer = bpy.context.view_layer
+    view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    depsgraph.update()
+
+
+def clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def find_principled_bsdf(material):
+    if material is None or not material.use_nodes:
+        return None
+    for node in material.node_tree.nodes:
+        if node.type == "BSDF_PRINCIPLED":
+            return node
+    return None
+
+
+def get_primary_source_material(obj):
+    for slot in obj.material_slots:
+        if slot.material is not None:
+            return slot.material
+    return None
+
+
+# --------------------------------------------------
+# GPU / CYCLES
+# --------------------------------------------------
+
+
+def _device_name_upper(device) -> str:
+    return (device.name or "").upper()
+
+
+def _is_amd_gpu_device(device) -> bool:
+    name = _device_name_upper(device)
+    return any(marker in name for marker in _AMD_GPU_MARKERS)
+
+
+def resolve_compute_device_order(cycles_prefs):
+    prefer = (CYCLES_COMPUTE_DEVICE or "").strip().upper()
+    if prefer:
+        return (prefer,) + tuple(dt for dt in COMPUTE_DEVICE_PRIORITY if dt != prefer)
+
+    has_hip_amd = False
+    has_optix = False
+    has_cuda = False
+
+    for device_type in ("HIP", "OPTIX", "CUDA", "METAL", "ONEAPI"):
+        try:
+            cycles_prefs.compute_device_type = device_type
+            cycles_prefs.get_devices()
+        except (TypeError, AttributeError, RuntimeError):
+            continue
+
+        for device in cycles_prefs.devices:
+            if device.type != device_type:
+                continue
+            if device_type == "HIP" and _is_amd_gpu_device(device):
+                has_hip_amd = True
+            elif device_type == "OPTIX":
+                has_optix = True
+            elif device_type == "CUDA":
+                has_cuda = True
+
+    if has_hip_amd:
+        return ("HIP", "OPTIX", "CUDA", "METAL", "ONEAPI")
+    if has_optix:
+        return ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI")
+    if has_cuda:
+        return ("CUDA", "OPTIX", "HIP", "METAL", "ONEAPI")
+    return COMPUTE_DEVICE_PRIORITY
+
+
+def setup_cycles_bake_device(target_scene, use_gpu: bool = USE_GPU_BAKE):
+    if not use_gpu:
+        target_scene.cycles.device = "CPU"
+        return {"device": "CPU", "backend": None, "names": ""}
+
+    try:
+        cycles_prefs = bpy.context.preferences.addons["cycles"].preferences
+    except KeyError:
+        target_scene.cycles.device = "CPU"
+        return {"device": "CPU", "backend": None, "names": ""}
+
+    for device_type in resolve_compute_device_order(cycles_prefs):
+        try:
+            cycles_prefs.compute_device_type = device_type
+            cycles_prefs.get_devices()
+        except (TypeError, AttributeError, RuntimeError):
+            continue
+
+        gpus = [device for device in cycles_prefs.devices if device.type == device_type]
+        if not gpus:
+            continue
+
+        for device in cycles_prefs.devices:
+            device.use = device.type == device_type
+
+        target_scene.cycles.device = "GPU"
+        names = ", ".join(device.name for device in gpus)
+        log_info(f"Cycles device: GPU ({device_type}) — {names}")
+        return {"device": "GPU", "backend": device_type, "names": names}
+
+    target_scene.cycles.device = "CPU"
+    return {"device": "CPU", "backend": None, "names": ""}
+
+
+def apply_bake_settings(target_scene, profile) -> None:
+    settings = profile_bake_settings(profile)
+
+    target_scene.cycles.use_adaptive_sampling = True
+    target_scene.cycles.adaptive_threshold = float(settings["noise_threshold"])
+    target_scene.cycles.samples = int(settings["max_samples"])
+    target_scene.cycles.adaptive_min_samples = int(settings["min_samples"])
+    target_scene.cycles.use_denoising = bool(settings["use_denoise"])
+
+    if hasattr(target_scene.cycles, "use_preview_adaptive_sampling"):
+        target_scene.cycles.use_preview_adaptive_sampling = True
+    if hasattr(target_scene.cycles, "preview_adaptive_threshold"):
+        target_scene.cycles.preview_adaptive_threshold = float(settings["noise_threshold"])
+    if hasattr(target_scene.cycles, "preview_adaptive_min_samples"):
+        target_scene.cycles.preview_adaptive_min_samples = int(settings["min_samples"])
+    if hasattr(target_scene.cycles, "preview_samples"):
+        target_scene.cycles.preview_samples = int(settings["max_samples"])
+    if hasattr(target_scene.cycles, "preview_use_denoising"):
+        target_scene.cycles.preview_use_denoising = bool(settings["use_denoise"])
+
+    target_scene.cycles.max_bounces = 8
+    target_scene.cycles.diffuse_bounces = 4
+    target_scene.cycles.glossy_bounces = 4
+    target_scene.cycles.transmission_bounces = 4
+    target_scene.cycles.volume_bounces = 0
+    target_scene.cycles.seed = 0
+    target_scene.cycles.use_animated_seed = False
+
+    log_info(
+        "Bake sampling: "
+        f"max_samples={settings['max_samples']}, "
+        f"min_samples={settings['min_samples']}, "
+        f"noise_threshold={settings['noise_threshold']}, "
+        f"use_denoise={settings['use_denoise']}"
+    )
+
+
+def apply_bake_ambient_occlusion_flags(bake) -> bool:
+    """
+    Enable AO on the active bake pass when the RNA property exists.
+    Blender 4.1 has no use_pass_ambient_occlusion — returns False so callers
+    run a dedicated AO bake pass instead.
+    """
+    for attr in ("use_pass_ambient_occlusion", "use_pass_ao"):
+        if hasattr(bake, attr):
+            setattr(bake, attr, True)
+            log_info(f"Bake AO flag: {attr}=True")
+            return True
+    return False
+
+
+def capture_world_ao_state(scene):
+    world = scene.world
+    if world is None:
+        return None
+    ls = world.light_settings
+    state = {
+        "ao_factor": float(getattr(ls, "ao_factor", 1.0)),
+        "distance": float(getattr(ls, "distance", 10.0)),
+    }
+    if hasattr(ls, "use_ambient_occlusion"):
+        state["use_ambient_occlusion"] = bool(ls.use_ambient_occlusion)
+    return state
+
+
+def apply_cycles_world_ao(scene, profile, enabled: bool | None = None) -> None:
+    """Enable Cycles world ambient occlusion for baking (when supported)."""
+    settings = profile_bake_settings(profile)
+    enabled = bool(settings["world_ao_enabled"] if enabled is None else enabled)
+    world = scene.world
+    if world is None:
+        log_warn("Scene has no world — skipping Cycles ambient occlusion")
+        return
+
+    ls = world.light_settings
+    if hasattr(ls, "use_ambient_occlusion"):
+        ls.use_ambient_occlusion = enabled
+        log_info(
+            f"World AO: use_ambient_occlusion={enabled}, "
+            f"ao_factor={getattr(ls, 'ao_factor', 1.0)}, "
+            f"distance={getattr(ls, 'distance', 10.0)}"
+        )
+    else:
+        log_warn("World.light_settings has no use_ambient_occlusion (skipped)")
+
+
+def restore_world_ao_state(scene, state) -> None:
+    if state is None or scene.world is None:
+        return
+    ls = scene.world.light_settings
+    if "use_ambient_occlusion" in state and hasattr(ls, "use_ambient_occlusion"):
+        ls.use_ambient_occlusion = state["use_ambient_occlusion"]
+    if hasattr(ls, "ao_factor") and "ao_factor" in state:
+        ls.ao_factor = state["ao_factor"]
+    if hasattr(ls, "distance") and "distance" in state:
+        ls.distance = state["distance"]
+
+
+def apply_diffuse_bake_pass_settings(target_scene) -> None:
+    """Direct + indirect diffuse irradiance bake (no albedo multiply)."""
+    bake = target_scene.render.bake
+    bake.use_pass_direct = True
+    bake.use_pass_indirect = True
+    bake.use_pass_color = False
+    if hasattr(bake, "use_pass_diffuse"):
+        bake.use_pass_diffuse = True
+
+    ao_on_pass = apply_bake_ambient_occlusion_flags(bake)
+
+    if hasattr(target_scene.cycles, "clamp_indirect"):
+        target_scene.cycles.clamp_indirect = 0.0
+    if hasattr(target_scene.cycles, "sample_clamp_indirect"):
+        target_scene.cycles.sample_clamp_indirect = 0.0
+    if hasattr(target_scene.cycles, "clamp_direct"):
+        target_scene.cycles.clamp_direct = 0.0
+    if hasattr(target_scene.cycles, "sample_clamp_direct"):
+        target_scene.cycles.sample_clamp_direct = 0.0
+
+    log_info(
+        "Diffuse bake passes: direct=True, indirect=True, color=False"
+        + (", ao_pass_flag=True" if ao_on_pass else ", ao_pass_flag=n/a (separate AO bake)")
+    )
+
+
+def setup_ao_bake_pass(target_scene, profile) -> None:
+    bake = target_scene.render.bake
+    bake.use_clear = True
+    bake.margin = int(profile.bake_margin)
+    if hasattr(bake, "margin_type"):
+        bake.margin_type = "ADJACENT_FACES"
+    target_scene.cycles.samples = int(profile.ao_samples)
+    log_info(f"AO bake pass: samples={target_scene.cycles.samples}")
+
+
+def setup_bake_pass(target_scene, profile) -> None:
+    bake = target_scene.render.bake
+    bake.use_selected_to_active = False
+    bake.use_clear = True
+    bake.use_pass_direct = True
+    bake.use_pass_indirect = True
+    bake.use_pass_color = False
+    if hasattr(bake, "use_pass_diffuse"):
+        bake.use_pass_diffuse = True
+    bake.margin = int(profile.bake_margin)
+
+    apply_bake_ambient_occlusion_flags(bake)
+    apply_cycles_world_ao(target_scene, profile, True)
+
+    if hasattr(bake, "margin_type"):
+        bake.margin_type = "ADJACENT_FACES"
+
+    if hasattr(bake, "view_from"):
+        bake.view_from = "ABOVE_SURFACE"
+
+    if hasattr(bake, "use_cage"):
+        bake.use_cage = False
+
+    apply_bake_settings(target_scene, profile)
+    apply_diffuse_bake_pass_settings(target_scene)
+    log_info(
+        f"Bake pass: direct+indirect diffuse, margin={profile.bake_margin}px "
+        f"(ADJACENT_FACES), view_from=ABOVE_SURFACE"
+    )
+
+
+def configure_cycles(profile, target_scene) -> dict:
+    """Configure Cycles render/bake settings from *profile*."""
+    device_info = setup_cycles_bake_device(target_scene)
+    setup_bake_pass(target_scene, profile)
+    return device_info
+
+
+# --------------------------------------------------
+# PROXY
+# --------------------------------------------------
+
+
+def capture_visibility(obj):
+    return {
+        "hide_render": obj.hide_render,
+        "hide_viewport": obj.hide_viewport,
+    }
+
+
+def restore_visibility(obj, state) -> None:
+    obj.hide_render = state["hide_render"]
+    obj.hide_viewport = state["hide_viewport"]
+
+
+def suppress_hidden_meshes_from_render(scene, view_layer=None):
+    """
+    Temporarily force hidden / invisible meshes out of Cycles contribution.
+    This covers meshes that are hidden in the viewport / active view layer even
+    if their hide_render flag was left enabled for normal renders.
+    """
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+
+    overrides = []
+    for obj in scene.objects:
+        if obj.type != "MESH":
+            continue
+        if obj.hide_render:
+            continue
+        if is_mesh_visible_in_view_layer(obj, view_layer):
+            continue
+        overrides.append((obj, False))
+        obj.hide_render = True
+
+    if overrides:
+        log_info(
+            f"Suppressed {len(overrides)} hidden/invisible mesh(es) from bake influence"
+        )
+        flush_view_layer()
+
+    return overrides
+
+
+def restore_hidden_mesh_render_overrides(overrides) -> None:
+    if not overrides:
+        return
+
+    restored = 0
+    for obj, hide_render in overrides:
+        try:
+            obj.hide_render = hide_render
+            restored += 1
+        except ReferenceError:
+            continue
+
+    if restored:
+        log_info(f"Restored bake visibility overrides on {restored} mesh(es)")
+        flush_view_layer()
+
+
+def hide_original_for_proxy_bake(original_obj):
+    """Hide the source mesh so the coplanar proxy receives rays during bake."""
+    state = capture_visibility(original_obj)
+    original_obj.hide_render = True
+    log_info(f"Hidden original from render during proxy bake: {original_obj.name}")
+    flush_view_layer()
+    return state
+
+
+def create_proxy(original_obj):
+    """Duplicate mesh data into a temporary object; original stays untouched."""
+    ensure_object_mode()
+    mesh_copy = original_obj.data.copy()
+    proxy = bpy.data.objects.new(proxy_object_name(original_obj.name), mesh_copy)
+    proxy.matrix_world = original_obj.matrix_world.copy()
+    copy_object_custom_properties(original_obj, proxy)
+
+    collection = original_obj.users_collection[0] if original_obj.users_collection else bpy.context.scene.collection
+    collection.objects.link(proxy)
+    proxy.hide_render = False
+    proxy.hide_viewport = False
+    log_info(f"Created proxy for {original_obj.name}: {proxy.name}")
+    return proxy
+
+
+def delete_proxy(proxy) -> None:
+    if proxy is None:
+        return
+    mesh = proxy.data
+    name = proxy.name
+    bpy.data.objects.remove(proxy, do_unlink=True)
+    if mesh and mesh.users == 0:
+        bpy.data.meshes.remove(mesh)
+    log_info(f"Removed proxy: {name}")
+
+
+def remove_temporary_material(material) -> None:
+    if material is None:
+        return
+    if material.users == 0:
+        bpy.data.materials.remove(material, do_unlink=True)
+
+
+# --------------------------------------------------
+# BAKE MATERIAL (Base Color network copy)
+# --------------------------------------------------
+
+
+def configure_neutral_principled_bsdf(bsdf) -> None:
+    bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    bsdf.inputs["Roughness"].default_value = 1.0
+    bsdf.inputs["Metallic"].default_value = 0.0
+    if "Specular IOR Level" in bsdf.inputs:
+        bsdf.inputs["Specular IOR Level"].default_value = 0.0
+    elif "Specular" in bsdf.inputs:
+        bsdf.inputs["Specular"].default_value = 0.0
+    if "Emission Strength" in bsdf.inputs:
+        bsdf.inputs["Emission Strength"].default_value = 0.0
+    elif "Emission" in bsdf.inputs:
+        bsdf.inputs["Emission"].default_value = (0.0, 0.0, 0.0, 1.0)
+
+
+def collect_upstream_nodes(node, node_tree, collected=None):
+    if collected is None:
+        collected = set()
+    if node in collected:
+        return collected
+    collected.add(node)
+    for socket in node.inputs:
+        if not socket.is_linked:
+            continue
+        upstream = socket.links[0].from_node
+        if upstream.type == "REROUTE":
+            collect_upstream_nodes(upstream, node_tree, collected)
+            continue
+        collect_upstream_nodes(upstream, node_tree, collected)
+    return collected
+
+
+def copy_node_settings(source_node, target_node) -> None:
+    target_node.label = source_node.label
+    target_node.use_custom_color = source_node.use_custom_color
+    target_node.color = source_node.color
+    target_node.mute = source_node.mute
+
+    if source_node.type == "TEX_IMAGE":
+        target_node.image = source_node.image
+        target_node.projection = source_node.projection
+        target_node.extension = source_node.extension
+        if hasattr(target_node, "interpolation"):
+            target_node.interpolation = source_node.interpolation
+    elif source_node.type == "TEX_COORD":
+        target_node.object = source_node.object
+    elif source_node.type == "UVMAP":
+        target_node.uv_map = source_node.uv_map
+    elif source_node.type == "MAPPING":
+        for prop in ("vector_type", "location", "rotation", "scale"):
+            if hasattr(source_node, prop):
+                setattr(target_node, prop, getattr(source_node, prop))
+    elif source_node.type == "GROUP":
+        target_node.node_tree = source_node.node_tree
+    elif source_node.type in {"MIX", "MIX_RGB"}:
+        if hasattr(target_node, "blend_type"):
+            target_node.blend_type = source_node.blend_type
+        if hasattr(target_node, "data_type"):
+            target_node.data_type = source_node.data_type
+        if hasattr(target_node, "clamp_factor"):
+            target_node.clamp_factor = source_node.clamp_factor
+        if hasattr(target_node, "clamp_result"):
+            target_node.clamp_result = source_node.clamp_result
+
+    for input_socket in source_node.inputs:
+        target_socket = target_node.inputs.get(input_socket.name)
+        if target_socket is None or target_socket.is_linked:
+            continue
+        try:
+            target_socket.default_value = input_socket.default_value
+        except (TypeError, AttributeError, ValueError):
+            pass
+
+
+def copy_base_color_network(source_material, target_material, target_bsdf) -> None:
+    """Copy the node network feeding Principled Base Color into the bake material."""
+    if source_material is None or not source_material.use_nodes:
+        target_bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+        return
+
+    source_bsdf = find_principled_bsdf(source_material)
+    if source_bsdf is None:
+        target_bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+        return
+
+    base_input = source_bsdf.inputs.get("Base Color")
+    if base_input is None:
+        return
+
+    if not base_input.is_linked:
+        target_bsdf.inputs["Base Color"].default_value = base_input.default_value
+        return
+
+    source_link = base_input.links[0]
+    root_node = source_link.from_node
+    root_socket_name = source_link.from_socket.name
+    source_tree = source_material.node_tree
+
+    nodes_to_copy = collect_upstream_nodes(root_node, source_tree)
+    target_nodes = target_material.node_tree.nodes
+    target_links = target_material.node_tree.links
+    node_map = {}
+
+    for old_node in nodes_to_copy:
+        new_node = target_nodes.new(old_node.bl_idname)
+        new_node.name = old_node.name
+        new_node.location = (old_node.location.x - 300.0, old_node.location.y)
+        copy_node_settings(old_node, new_node)
+        node_map[old_node] = new_node
+
+    for old_node in nodes_to_copy:
+        new_node = node_map[old_node]
+        for input_socket in old_node.inputs:
+            if not input_socket.is_linked:
+                continue
+            from_old = input_socket.links[0].from_node
+            from_socket_name = input_socket.links[0].from_socket.name
+            if from_old not in node_map:
+                continue
+            target_links.new(
+                node_map[from_old].outputs[from_socket_name],
+                new_node.inputs[input_socket.name],
+            )
+
+    new_root = node_map[root_node]
+    target_links.new(new_root.outputs[root_socket_name], target_bsdf.inputs["Base Color"])
+
+
+def create_bake_material(original_obj, neutral_albedo: bool = False):
+    """Temporary bake material preserving original Base Color textures/procedurals."""
+    mat_name = bake_material_name(original_obj.name)
+    existing = bpy.data.materials.get(mat_name)
+    if existing is not None:
+        bpy.data.materials.remove(existing, do_unlink=True)
+
+    material = bpy.data.materials.new(mat_name)
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    nodes.clear()
+
+    output = nodes.new("ShaderNodeOutputMaterial")
+    output.location = (500, 0)
+
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (250, 0)
+    configure_neutral_principled_bsdf(bsdf)
+
+    image_node = nodes.new("ShaderNodeTexImage")
+    image_node.name = BAKE_IMAGE_NODE_NAME
+    image_node.location = (-500, -300)
+
+    links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
+
+    if not neutral_albedo:
+        source_material = get_primary_source_material(original_obj)
+        copy_base_color_network(source_material, material, bsdf)
+    material.node_tree.update_tag()
+    return material
+
+
+def assign_bake_material(proxy_obj, bake_material) -> None:
+    slot_count = max(len(proxy_obj.material_slots), 1)
+    proxy_obj.data.materials.clear()
+    for _ in range(slot_count):
+        proxy_obj.data.materials.append(bake_material)
+
+
+def set_active_bake_image(bake_material, image) -> None:
+    nodes = bake_material.node_tree.nodes
+    for node in nodes:
+        node.select = False
+
+    image_node = nodes.get(BAKE_IMAGE_NODE_NAME)
+    if image_node is None:
+        image_node = nodes.new("ShaderNodeTexImage")
+        image_node.name = BAKE_IMAGE_NODE_NAME
+
+    image_node.image = image
+    nodes.active = image_node
+    image_node.select = True
+    bake_material.node_tree.update_tag()
+
+
+def create_neutral_contributor_material() -> bpy.types.Material:
+    mat_name = f"{BAKE_MAT_PREFIX}NEUTRAL_ALBEDO"
+    existing = bpy.data.materials.get(mat_name)
+    if existing is not None:
+        bpy.data.materials.remove(existing, do_unlink=True)
+
+    material = bpy.data.materials.new(mat_name)
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    nodes.clear()
+
+    output = nodes.new("ShaderNodeOutputMaterial")
+    output.location = (300, 0)
+
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (0, 0)
+    configure_neutral_principled_bsdf(bsdf)
+
+    links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
+    material.node_tree.update_tag()
+    return material
+
+
+def capture_material_override_state(obj):
+    return {
+        "object": obj,
+        "slot_count": len(obj.material_slots),
+        "materials": [slot.material for slot in obj.material_slots],
+        "links": [getattr(slot, "link", None) for slot in obj.material_slots],
+        "active_material_index": getattr(obj, "active_material_index", 0),
+    }
+
+
+def apply_material_override(obj, material) -> dict | None:
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return None
+
+    snapshot = capture_material_override_state(obj)
+
+    if snapshot["slot_count"] == 0:
+        mesh.materials.append(material)
+        if obj.material_slots:
+            slot = obj.material_slots[0]
+            if hasattr(slot, "link"):
+                slot.link = "OBJECT"
+            slot.material = material
+    else:
+        for slot in obj.material_slots:
+            if hasattr(slot, "link"):
+                slot.link = "OBJECT"
+            slot.material = material
+
+    obj.update_tag(refresh={"DATA"})
+    return snapshot
+
+
+def restore_material_override_state(snapshot) -> None:
+    if not snapshot:
+        return
+
+    obj = snapshot.get("object")
+    if obj is None:
+        return
+
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return
+
+    slot_count = int(snapshot.get("slot_count", 0))
+    materials = list(snapshot.get("materials", []))
+    links = list(snapshot.get("links", []))
+
+    if slot_count == 0:
+        mesh.materials.clear()
+    else:
+        for index in range(min(slot_count, len(obj.material_slots))):
+            slot = obj.material_slots[index]
+            link = links[index] if index < len(links) else None
+            if link is not None and hasattr(slot, "link"):
+                slot.link = link
+            slot.material = materials[index] if index < len(materials) else None
+
+        active_index = int(snapshot.get("active_material_index", 0))
+        if len(obj.material_slots) > 0:
+            obj.active_material_index = max(0, min(active_index, len(obj.material_slots) - 1))
+
+    obj.update_tag(refresh={"DATA"})
+
+
+def restore_material_overrides(snapshots) -> None:
+    if not snapshots:
+        return
+
+    restored = 0
+    for snapshot in snapshots:
+        try:
+            restore_material_override_state(snapshot)
+            restored += 1
+        except ReferenceError:
+            continue
+
+    if restored:
+        log_info(f"Restored bake material overrides on {restored} object(s)")
+        flush_view_layer()
+
+
+def get_or_create_lightmap_image(object_name: str):
+    image_name = lightmap_image_name(object_name)
+    existing = bpy.data.images.get(image_name)
+    if existing is not None:
+        bpy.data.images.remove(existing)
+
+    image = bpy.data.images.new(
+        name=image_name,
+        width=LIGHTMAP_RESOLUTION,
+        height=LIGHTMAP_RESOLUTION,
+        alpha=False,
+        float_buffer=False,
+    )
+    image.colorspace_settings.name = "Non-Color"
+    black = [0.0, 0.0, 0.0, 1.0] * (LIGHTMAP_RESOLUTION * LIGHTMAP_RESOLUTION)
+    image.pixels.foreach_set(black)
+    image.update()
+    return image
+
+
+def save_lightmap_image(image, filepath: str) -> None:
+    image.filepath_raw = filepath
+    image.file_format = "PNG"
+    image.save()
+    log_info(f"Saved PNG: {json_path(filepath)}")
+
+
+def get_or_create_ao_temp_image(object_name: str):
+    image_name = f"{ao_image_name(object_name)}_TEMP"
+    existing = bpy.data.images.get(image_name)
+    if existing is not None:
+        bpy.data.images.remove(existing)
+
+    image = bpy.data.images.new(
+        name=image_name,
+        width=LIGHTMAP_RESOLUTION,
+        height=LIGHTMAP_RESOLUTION,
+        alpha=False,
+        float_buffer=False,
+    )
+    image.colorspace_settings.name = "Non-Color"
+    white = [1.0, 1.0, 1.0, 1.0] * (LIGHTMAP_RESOLUTION * LIGHTMAP_RESOLUTION)
+    image.pixels.foreach_set(white)
+    image.update()
+    return image
+
+
+def multiply_ao_into_image(base_image, ao_image, strength: float) -> None:
+    if base_image.size[0] != ao_image.size[0] or base_image.size[1] != ao_image.size[1]:
+        raise ValueError("AO image size must match lightmap image size")
+
+    strength = clamp01(strength)
+    if strength <= 0.0:
+        return
+
+    px_base = list(base_image.pixels[:])
+    px_ao = list(ao_image.pixels[:])
+
+    for i in range(0, len(px_base), 4):
+        ao = px_ao[i]
+        factor = 1.0 - strength + (strength * ao)
+        px_base[i] *= factor
+        px_base[i + 1] *= factor
+        px_base[i + 2] *= factor
+
+    base_image.pixels.foreach_set(px_base)
+    base_image.update()
+    log_info(f"Applied AO multiply into lightmap (strength={strength:.2f})")
+
+
+def remove_temp_image(image) -> None:
+    if image is None:
+        return
+    name = image.name
+    bpy.data.images.remove(image)
+    log_info(f"Removed temp image: {name}")
+
+
+def bake_and_apply_ao(
+    proxy,
+    bake_material,
+    lightmap_image,
+    original_obj,
+    output_dir: str,
+    profile,
+) -> str | None:
+    """
+    Dedicated AO pass (Blender 4.1) when use_pass_ambient_occlusion is unavailable.
+    Multiplies AO into the lightmap and optionally saves a separate AO PNG.
+    """
+    settings = profile_bake_settings(profile)
+    if not settings["bake_ao"]:
+        return None
+
+    scene = bpy.context.scene
+    ao_on_diffuse_pass = apply_bake_ambient_occlusion_flags(scene.render.bake)
+    if ao_on_diffuse_pass:
+        log_info("AO pass flag present on diffuse bake — skipping separate AO multiply")
+        return None
+
+    ao_image = get_or_create_ao_temp_image(original_obj.name)
+    set_active_bake_image(bake_material, ao_image)
+    select_single_object(proxy)
+    flush_view_layer()
+
+    setup_ao_bake_pass(scene, profile)
+    apply_cycles_world_ao(scene, profile, True)
+
+    log_info(f"Baking AO: {original_obj.name} (via proxy)")
+    ensure_object_mode()
+    bpy.ops.object.bake(type="AO")
+    ao_image.update()
+
+    strength = float(settings["ao_strength"])
+    multiply_ao_into_image(lightmap_image, ao_image, strength)
+
+    ao_path = None
+    if settings["save_ao_map"]:
+        ao_path = os.path.join(output_dir, ao_png_filename(original_obj.name))
+        save_lightmap_image(ao_image, ao_path)
+
+    remove_temp_image(ao_image)
+    apply_bake_settings(scene, profile)
+    apply_diffuse_bake_pass_settings(scene)
+    return ao_path
+
+
+# --------------------------------------------------
+# CUSTOM PROPERTIES
+# --------------------------------------------------
+
+
+def _read_id_prop(host, prop_name):
+    """Read a custom/ID property from an Object or Mesh datablock."""
+    if host is None:
+        return None
+    try:
+        if prop_name in host:
+            return host[prop_name]
+    except (TypeError, AttributeError):
+        pass
+    getter = getattr(host, "get", None)
+    if callable(getter):
+        try:
+            value = getter(prop_name)
+            if value is not None:
+                return value
+        except (TypeError, AttributeError, KeyError):
+            pass
+    return None
+
+
+def _read_object_custom_prop(obj, prop_name):
+    """Read a custom property from the Object datablock."""
+    return _read_id_prop(obj, prop_name)
+
+
+def _read_lightmap_setting_prop(obj, prop_name):
+    """Read a lightmap setting from Object, then Mesh datablock."""
+    raw = _read_object_custom_prop(obj, prop_name)
+    if raw is not None:
+        return raw
+    mesh = getattr(obj, "data", None)
+    return _read_id_prop(mesh, prop_name)
+
+
+def _parse_bool_prop(raw) -> bool | None:
+    """Parse Blender/custom-property bool values. None when unrecognized."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        if raw == 0:
+            return False
+        if raw == 1:
+            return True
+        return None
+
+    text = str(raw).strip().lower()
+    if text in ("false", "0", "no", "off"):
+        return False
+    if text in ("true", "1", "yes", "on"):
+        return True
+    return None
+
+
+def read_lightmap_neutral_albedo(obj) -> bool:
+    """True when the object should contribute neutral white albedo during bake."""
+    raw = _read_object_custom_prop(obj, PROP_LIGHTMAP_NEUTRAL_ALBEDO)
+    if raw is None:
+        return False
+
+    parsed = _parse_bool_prop(raw)
+    if parsed is None:
+        log_warn(
+            f"invalid {PROP_LIGHTMAP_NEUTRAL_ALBEDO}={raw!r} on '{obj.name}' — "
+            "expected true/false-like value; ignoring"
+        )
+        return False
+
+    return parsed
+
+
+def read_overwrite_lightmap(obj) -> bool:
+    """
+    True when LightMap UV may be regenerated (default).
+    False when Ovewrite_LightMap is set to a false-like value.
+    """
+    raw = None
+    prop_name = None
+    for candidate in PROP_OVERWRITE_LIGHTMAP_ALIASES:
+        raw = _read_lightmap_setting_prop(obj, candidate)
+        if raw is not None:
+            prop_name = candidate
+            break
+
+    if raw is None:
+        return True
+
+    parsed = _parse_bool_prop(raw)
+    if parsed is None:
+        log_warn(
+            f"invalid {prop_name or PROP_OVERWRITE_LIGHTMAP}={raw!r} on '{obj.name}' — "
+            "defaulting to overwrite"
+        )
+        return True
+
+    log_info(
+        f"{prop_name or PROP_OVERWRITE_LIGHTMAP}={raw!r} on '{obj.name}' "
+        f"→ overwrite={'yes' if parsed else 'no'}"
+    )
+    return parsed
+
+
+def resolve_lightmap_uv_layer_name(mesh) -> str | None:
+    """
+    Return the existing lightmap UV layer name.
+    Accepts the canonical LightMap name or any UV layer already at the lightmap slot.
+    """
+    if mesh is None:
+        return None
+
+    if LIGHTMAP_UV_NAME in mesh.uv_layers:
+        return LIGHTMAP_UV_NAME
+
+    if len(mesh.uv_layers) > LIGHTMAP_UV_INDEX:
+        return mesh.uv_layers[LIGHTMAP_UV_INDEX].name
+
+    return None
+
+
+def mesh_has_existing_lightmap_uv(mesh) -> bool:
+    """True when the mesh already has UV data at the expected lightmap slot."""
+    return resolve_lightmap_uv_layer_name(mesh) is not None
+
+
+def should_preserve_existing_lightmap_uv(obj) -> bool:
+    """Preserve existing LightMap UV when overwrite is disabled and UV is present."""
+    if read_overwrite_lightmap(obj):
+        return False
+
+    mesh = getattr(obj, "data", None)
+    layer_name = resolve_lightmap_uv_layer_name(mesh)
+    if layer_name is None:
+        log_warn(
+            f"{PROP_OVERWRITE_LIGHTMAP}=False on '{obj.name}' but no UV at "
+            f"index {LIGHTMAP_UV_INDEX} (or '{LIGHTMAP_UV_NAME}') — unpacking new UV"
+        )
+        return False
+
+    log_info(
+        f"Will preserve existing lightmap UV '{layer_name}' on '{obj.name}' "
+        f"({PROP_OVERWRITE_LIGHTMAP}=False)"
+    )
+    return True
+
+
+def snapshot_lightmap_uv_state(obj):
+    """Capture lightmap UV coordinates and layer order for later restore."""
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return None
+
+    layer_name = resolve_lightmap_uv_layer_name(mesh)
+    if layer_name is None:
+        return None
+
+    return {
+        "layer_order": [layer.name for layer in mesh.uv_layers],
+        "layer_name": layer_name,
+        "uvs": _snapshot_uv_layers(mesh),
+        "active_layer": mesh.uv_layers.active.name if mesh.uv_layers.active else None,
+        "active_render": next(
+            (layer.name for layer in mesh.uv_layers if layer.active_render),
+            None,
+        ),
+    }
+
+
+def restore_lightmap_uv_state(obj, snapshot) -> None:
+    """Restore a previously captured lightmap UV state onto the mesh."""
+    if snapshot is None:
+        return
+
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return
+
+    _restore_uv_layers(mesh, snapshot["uvs"])
+
+    active_layer = snapshot.get("active_layer")
+    if active_layer and active_layer in mesh.uv_layers:
+        mesh.uv_layers.active = mesh.uv_layers[active_layer]
+
+    active_render = snapshot.get("active_render")
+    if active_render and active_render in mesh.uv_layers:
+        for layer in mesh.uv_layers:
+            layer.active_render = layer.name == active_render
+
+    mesh.update()
+    obj.update_tag(refresh={"DATA"})
+
+
+def copy_object_custom_properties(source_obj, target_obj) -> None:
+    """Copy custom ID properties so proxy objects follow the same bake rules."""
+    for key in source_obj.keys():
+        if key == "_RNA_UI":
+            continue
+        try:
+            target_obj[key] = source_obj[key]
+        except (TypeError, AttributeError, ValueError):
+            pass
+
+
+# --------------------------------------------------
+# UV (same packing logic as AutoLightmapv4.py)
+# --------------------------------------------------
+
+
+def _snapshot_uv_layers(mesh):
+    loop_count = len(mesh.loops)
+    specs = []
+    for ul in mesh.uv_layers:
+        flat = [0.0] * (loop_count * 2)
+        ul.data.foreach_get("uv", flat)
+        specs.append(
+            {
+                "name": ul.name,
+                "uvs": flat,
+                "active_render": bool(ul.active_render),
+            }
+        )
+    return specs
+
+
+def _restore_uv_layers(mesh, ordered_specs) -> None:
+    while mesh.uv_layers:
+        mesh.uv_layers.remove(mesh.uv_layers[0])
+
+    for spec in ordered_specs:
+        layer = mesh.uv_layers.new(name=spec["name"], do_init=False)
+        layer.data.foreach_set("uv", spec["uvs"])
+        layer.active_render = spec.get("active_render", False)
+
+
+def move_uv_layer_to_index(mesh, layer_name: str, target_index: int) -> None:
+    idx = mesh.uv_layers.find(layer_name)
+    if idx == -1:
+        raise RuntimeError(f"UV layer '{layer_name}' not found")
+    if idx == target_index:
+        return
+
+    if hasattr(mesh.uv_layers, "move"):
+        mesh.uv_layers.move(idx, target_index)
+        return
+
+    specs = _snapshot_uv_layers(mesh)
+    target_spec = next((s for s in specs if s["name"] == layer_name), None)
+    if target_spec is None:
+        raise RuntimeError(f"UV layer '{layer_name}' not found during reorder")
+
+    others = [s for s in specs if s["name"] != layer_name]
+    insert_at = max(0, min(int(target_index), len(others)))
+    ordered = others[:insert_at] + [target_spec] + others[insert_at:]
+    _restore_uv_layers(mesh, ordered)
+
+
+def uv_margin_normalized(resolution: int, margin_px: int, uv_margin_min: float) -> float:
+    size = max(1, int(resolution))
+    px = max(0, int(margin_px))
+    minimum = max(0.0, float(uv_margin_min))
+    if px <= 0:
+        return minimum
+    return max(minimum, px / float(size))
+
+
+def _mesh_triangle_count(mesh) -> int:
+    mesh.calc_loop_triangles()
+    return len(mesh.loop_triangles)
+
+
+def _estimate_uv_islands(mesh, layer_name: str) -> int:
+    if mesh is None or layer_name not in mesh.uv_layers:
+        return 0
+    try:
+        mesh.calc_loop_triangles()
+        island_count = mesh.uv_layers[layer_name].data.calc_unique_uv_islands()
+        return max(0, int(island_count))
+    except (AttributeError, RuntimeError, TypeError):
+        return max(1, len(mesh.polygons))
+
+
+def _estimate_atlas_fill_percent(mesh, layer_name: str) -> float:
+    if mesh is None or layer_name not in mesh.uv_layers:
+        return 0.0
+
+    uv_layer = mesh.uv_layers[layer_name].data
+    if not uv_layer:
+        return 0.0
+
+    min_u = min(loop.uv.x for loop in uv_layer)
+    min_v = min(loop.uv.y for loop in uv_layer)
+    max_u = max(loop.uv.x for loop in uv_layer)
+    max_v = max(loop.uv.y for loop in uv_layer)
+
+    width = max(0.0, max_u - min_u)
+    height = max(0.0, max_v - min_v)
+    return clamp01(width * height) * 100.0
+
+
+def prepare_lightmap_uv(obj, profile, settings_obj=None) -> bool:
+    """
+    Stage 1 — ensure the lightmap UV layer exists and faces are ready to pack.
+
+    Returns True when an existing lightmap UV was preserved (later stages skipped).
+    """
+    settings_obj = settings_obj or obj
+    if should_preserve_existing_lightmap_uv(settings_obj):
+        preserve_existing_lightmap_uv(obj)
+        return True
+
+    mesh = obj.data
+    if len(mesh.uv_layers) == 0:
+        mesh.uv_layers.new(name="UVMap")
+
+    ensure_object_mode()
+    select_single_object(obj)
+
+    if LIGHTMAP_UV_NAME in mesh.uv_layers:
+        mesh.uv_layers.remove(mesh.uv_layers[LIGHTMAP_UV_NAME])
+
+    mesh.uv_layers.new(name=LIGHTMAP_UV_NAME)
+    move_uv_layer_to_index(mesh, LIGHTMAP_UV_NAME, LIGHTMAP_UV_INDEX)
+
+    lightmap_layer = mesh.uv_layers[LIGHTMAP_UV_NAME]
+    mesh.uv_layers.active = lightmap_layer
+    lightmap_layer.active_render = True
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    log_info(f"Prepared lightmap UV layer on {obj.name}")
+    return False
+
+
+def normalize_texel_density(obj, profile) -> None:
+    """Stage 2 — apply object scale so UV islands share consistent texel density."""
+    ensure_object_mode()
+    select_single_object(obj)
+    apply_object_scale_for_uv(obj)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    log_info(f"Normalized texel density (applied scale) on {obj.name}")
+
+
+def apply_edge_inset(obj, profile) -> float:
+    """Stage 3 — resolve edge inset from the profile (applied after packing)."""
+    inset = uv_margin_normalized(
+        LIGHTMAP_RESOLUTION,
+        profile.uv_edge_inset,
+        profile.uv_margin_minimum,
+    )
+    log_info(
+        f"Edge inset configured for {obj.name}: "
+        f"{profile.uv_edge_inset}px ({inset:.4f} UV)"
+    )
+    return inset
+
+
+def pack_uv_islands(obj, profile) -> None:
+    """Stage 4 — pack islands using Blender's lightmap pack operator and profile margins."""
+    pack_margin = uv_margin_normalized(
+        LIGHTMAP_RESOLUTION,
+        profile.bake_margin,
+        profile.uv_margin_minimum,
+    )
+
+    if bpy.context.mode != "EDIT":
+        ensure_object_mode()
+        select_single_object(obj)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+
+    bpy.ops.uv.lightmap_pack(
+        PREF_CONTEXT="ALL_FACES",
+        PREF_PACK_IN_ONE=True,
+        PREF_NEW_UVLAYER=False,
+        PREF_BOX_DIV=int(profile.pack_box_division),
+        PREF_MARGIN_DIV=pack_margin,
+    )
+    ensure_object_mode()
+    log_info(
+        f"Packed UV islands on {obj.name} "
+        f"(margin={pack_margin:.4f}, box_div={profile.pack_box_division})"
+    )
+
+
+def finalize_uv_normalization(obj, profile, edge_inset_uv: float) -> None:
+    mesh = obj.data
+    normalize_uv_to_unit_square(mesh, edge_inset_uv=edge_inset_uv)
+    mesh.update()
+    activate_lightmap_uv(obj)
+    log_info(
+        f"Finalized UV normalization on {obj.name} "
+        f"(index {LIGHTMAP_UV_INDEX}, inset={edge_inset_uv:.4f})"
+    )
+
+
+def run_uv_pipeline(obj, profile, settings_obj=None) -> None:
+    """Run the full UV preparation pipeline for one object/proxy."""
+    preserved = prepare_lightmap_uv(obj, profile, settings_obj=settings_obj)
+    if preserved:
+        return
+
+    normalize_texel_density(obj, profile)
+    edge_inset = apply_edge_inset(obj, profile)
+    pack_uv_islands(obj, profile)
+    finalize_uv_normalization(obj, profile, edge_inset)
+
+
+def validate_uv_pack_object(obj) -> tuple[bool, list[str]]:
+    """Stage 5 — validate packed lightmap UVs for a single mesh."""
+    issues: list[str] = []
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return False, ["mesh data missing"]
+
+    layer_name = resolve_lightmap_uv_layer_name(mesh)
+    if layer_name is None:
+        return False, ["missing lightmap UV layer"]
+
+    uv_layer = mesh.uv_layers[layer_name].data
+    if not uv_layer:
+        return False, [f"UV layer '{layer_name}' has no loop data"]
+
+    min_u = min(loop.uv.x for loop in uv_layer)
+    min_v = min(loop.uv.y for loop in uv_layer)
+    max_u = max(loop.uv.x for loop in uv_layer)
+    max_v = max(loop.uv.y for loop in uv_layer)
+
+    width = max_u - min_u
+    height = max_v - min_v
+    if width <= UV_VALIDATE_EPSILON or height <= UV_VALIDATE_EPSILON:
+        issues.append("zero-area UV bounds")
+
+    tol = UV_OUT_OF_BOUNDS_TOLERANCE
+    if min_u < -tol or min_v < -tol or max_u > 1.0 + tol or max_v > 1.0 + tol:
+        issues.append("UV coordinates outside 0-1 range")
+
+    mesh.calc_loop_triangles()
+    zero_area_faces = 0
+    for tri in mesh.loop_triangles:
+        loops = [uv_layer[loop_index].uv for loop_index in tri.loops]
+        if len(loops) < 3:
+            continue
+        area = abs(
+            (loops[1].x - loops[0].x) * (loops[2].y - loops[0].y)
+            - (loops[2].x - loops[0].x) * (loops[1].y - loops[0].y)
+        ) * 0.5
+        if area <= UV_VALIDATE_EPSILON:
+            zero_area_faces += 1
+
+    if zero_area_faces:
+        issues.append(f"{zero_area_faces} zero-area UV triangle(s)")
+
+    return len(issues) == 0, issues
+
+
+def validate_uv_pack(objects) -> tuple[bool, list[str]]:
+    """Validate UV packing for all *objects*; returns (ok, combined issue messages)."""
+    all_ok = True
+    messages: list[str] = []
+
+    for obj in objects:
+        ok, issues = validate_uv_pack_object(obj)
+        if ok:
+            continue
+        all_ok = False
+        for issue in issues:
+            message = f"{obj.name}: {issue}"
+            messages.append(message)
+            log_error(message)
+
+    return all_ok, messages
+
+
+def update_profile_geometry_stats(stats: ProfileBakeStats, objects) -> None:
+    triangles = 0
+    islands = 0
+    fill_total = 0.0
+
+    for obj in objects:
+        mesh = getattr(obj, "data", None)
+        if mesh is None:
+            continue
+        triangles += _mesh_triangle_count(mesh)
+        layer_name = resolve_lightmap_uv_layer_name(mesh) or LIGHTMAP_UV_NAME
+        islands += _estimate_uv_islands(mesh, layer_name)
+        fill_total += _estimate_atlas_fill_percent(mesh, layer_name)
+
+    stats.triangles = triangles
+    stats.uv_islands = islands
+    if objects:
+        stats.atlas_fill_percent = fill_total / float(len(objects))
+        stats.pack_efficiency = clamp01(stats.atlas_fill_percent / 100.0) * 100.0
+
+
+def normalize_uv_to_unit_square(mesh, edge_inset_uv: float = 0.0) -> None:
+    if not mesh.uv_layers.active:
+        return
+
+    uv_layer = mesh.uv_layers.active.data
+    if not uv_layer:
+        return
+
+    min_u = min(loop.uv.x for loop in uv_layer)
+    min_v = min(loop.uv.y for loop in uv_layer)
+    max_u = max(loop.uv.x for loop in uv_layer)
+    max_v = max(loop.uv.y for loop in uv_layer)
+
+    size_u = max_u - min_u
+    size_v = max_v - min_v
+
+    if size_u <= 0.0 or size_v <= 0.0:
+        log_warn("UV normalize skipped: zero-size UV bounds")
+        return
+
+    inset = clamp01(float(edge_inset_uv))
+    if inset >= 0.5:
+        inset = 0.0
+    span = 1.0 - (2.0 * inset)
+
+    for loop in uv_layer:
+        loop.uv.x = inset + ((loop.uv.x - min_u) / size_u) * span
+        loop.uv.y = inset + ((loop.uv.y - min_v) / size_v) * span
+
+
+def apply_object_scale_for_uv(obj) -> None:
+    ensure_object_mode()
+    select_single_object(obj)
+    if (
+        abs(obj.scale.x - 1.0) < 1e-6
+        and abs(obj.scale.y - 1.0) < 1e-6
+        and abs(obj.scale.z - 1.0) < 1e-6
+    ):
+        return
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    log_info(f"Applied object scale for UV: {obj.name}")
+
+
+def activate_lightmap_uv(obj, layer_name: str | None = None) -> None:
+    mesh = obj.data
+    layer_name = layer_name or resolve_lightmap_uv_layer_name(mesh) or LIGHTMAP_UV_NAME
+    if layer_name not in mesh.uv_layers:
+        raise RuntimeError(f"{obj.name}: missing UV layer '{layer_name}'")
+
+    if layer_name != LIGHTMAP_UV_NAME:
+        mesh.uv_layers[layer_name].name = LIGHTMAP_UV_NAME
+        layer_name = LIGHTMAP_UV_NAME
+
+    move_uv_layer_to_index(mesh, LIGHTMAP_UV_NAME, LIGHTMAP_UV_INDEX)
+    layer = mesh.uv_layers[LIGHTMAP_UV_NAME]
+    mesh.uv_layers.active = layer
+    layer.active_render = True
+
+
+def preserve_existing_lightmap_uv(obj) -> None:
+    """Use the mesh's existing lightmap UV without lightmap_pack or scale apply."""
+    mesh = obj.data
+    layer_name = resolve_lightmap_uv_layer_name(mesh)
+    if layer_name is None:
+        raise RuntimeError(
+            f"{obj.name}: no existing lightmap UV at index {LIGHTMAP_UV_INDEX}"
+        )
+
+    activate_lightmap_uv(obj, layer_name)
+    mesh.update()
+    log_info(
+        f"Preserved existing lightmap UV '{layer_name}' → '{LIGHTMAP_UV_NAME}' "
+        f"({PROP_OVERWRITE_LIGHTMAP}=False, index {LIGHTMAP_UV_INDEX}, no unpack)"
+    )
+
+
+def activate_primary_render_uv(obj) -> None:
+    mesh = obj.data
+    if not mesh or len(mesh.uv_layers) == 0:
+        return
+
+    for layer in mesh.uv_layers:
+        layer.active_render = False
+
+    primary = mesh.uv_layers[0]
+    mesh.uv_layers.active = primary
+    primary.active_render = True
+    mesh.update()
+
+
+def recreate_lightmap_uv(obj, profile, settings_obj=None) -> None:
+    """Run the modular UV pipeline (profile-driven replacement for legacy helper)."""
+    run_uv_pipeline(obj, profile, settings_obj=settings_obj)
+
+
+def transfer_lightmap_uv_to_original(original_obj, proxy_obj) -> None:
+    """Copy LightMap UV from proxy mesh onto original mesh; UV0 stays intact."""
+    if should_preserve_existing_lightmap_uv(original_obj):
+        log_info(
+            f"Skipped {LIGHTMAP_UV_NAME} transfer to original "
+            f"({PROP_OVERWRITE_LIGHTMAP}=False): {original_obj.name}"
+        )
+        return
+
+    original_mesh = original_obj.data
+    proxy_mesh = proxy_obj.data
+
+    if LIGHTMAP_UV_NAME not in proxy_mesh.uv_layers:
+        raise RuntimeError(f"Proxy {proxy_obj.name} missing '{LIGHTMAP_UV_NAME}' UV")
+
+    if len(original_mesh.loops) != len(proxy_mesh.loops):
+        raise RuntimeError(
+            f"Loop count mismatch copying UV ({original_obj.name} vs proxy)"
+        )
+
+    if LIGHTMAP_UV_NAME in original_mesh.uv_layers:
+        original_mesh.uv_layers.remove(original_mesh.uv_layers[LIGHTMAP_UV_NAME])
+
+    new_layer = original_mesh.uv_layers.new(name=LIGHTMAP_UV_NAME)
+    move_uv_layer_to_index(original_mesh, LIGHTMAP_UV_NAME, LIGHTMAP_UV_INDEX)
+
+    proxy_layer = proxy_mesh.uv_layers[LIGHTMAP_UV_NAME]
+    flat = [0.0] * (len(original_mesh.loops) * 2)
+    proxy_layer.data.foreach_get("uv", flat)
+    new_layer.data.foreach_set("uv", flat)
+
+    activate_primary_render_uv(original_obj)
+    original_mesh.update()
+    log_info(f"Transferred {LIGHTMAP_UV_NAME} UV to original: {original_obj.name}")
+
+
+def restore_primary_render_uv_for_meshes(mesh_objects) -> None:
+    restored = 0
+    for obj in mesh_objects:
+        if obj.type != "MESH" or obj.data is None:
+            continue
+        if len(obj.data.uv_layers) == 0:
+            continue
+        if should_preserve_existing_lightmap_uv(obj):
+            continue
+        activate_primary_render_uv(obj)
+        obj.update_tag(refresh={"DATA"})
+        restored += 1
+
+    if restored:
+        log_info(f"Restored primary UV (index 0) for render on {restored} mesh(es)")
+    flush_view_layer()
+
+
+# --------------------------------------------------
+# MANIFEST
+# --------------------------------------------------
+
+
+def object_world_bounds(obj):
+    corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+    mins = [min(corner[i] for corner in corners) for i in range(3)]
+    maxs = [max(corner[i] for corner in corners) for i in range(3)]
+    return {"min": mins, "max": maxs}
+
+
+def build_manifest_entry(obj, png_path: str, profile, ao_path: str | None = None):
+    entry = {
+        "objectName": obj.name,
+        "meshName": obj.data.name if obj.data else obj.name,
+        "objectStem": sanitize_filename(obj.name),
+        "lightmap": os.path.basename(png_path),
+        "lightmapPath": json_path(png_path),
+        "profileName": profile.name,
+        "profileUuid": profile.uuid,
+        "uvSet": LIGHTMAP_UV_NAME,
+        "uvIndex": LIGHTMAP_UV_INDEX,
+        "lightmapUvChannel": LIGHTMAP_UV_CHANNEL,
+        "resolution": LIGHTMAP_RESOLUTION,
+        "bakeSettings": profile_bake_settings(profile),
+        "bounds": object_world_bounds(obj),
+    }
+    if ao_path:
+        entry["ao"] = os.path.basename(ao_path)
+        entry["aoPath"] = json_path(ao_path)
+    return entry
+
+
+def write_manifest(output_dir: str, lightmap_entries, profile_settings=None) -> str:
+    manifest_path = os.path.join(output_dir, MANIFEST_FILENAME)
+
+    mesh_compat = []
+    for entry in lightmap_entries:
+        mesh_compat.append(
+            {
+                "meshName": entry["objectName"],
+                "objectStem": entry["objectStem"],
+                "lightmap": entry["lightmap"],
+                "size": LIGHTMAP_RESOLUTION,
+            }
+        )
+
+    manifest = {
+        "version": 5,
+        "generator": GENERATOR_NAME,
+        "created": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "scene": blend_scene_name(),
+        "resolution": LIGHTMAP_RESOLUTION,
+        "outputFolder": json_path(output_dir),
+        "uvLayer": LIGHTMAP_UV_NAME,
+        "lightmapUvChannel": LIGHTMAP_UV_CHANNEL,
+        "textureFormat": "png",
+        "colorSpace": "Non-Color",
+        "bakeSettings": profile_settings or {},
+        "lightmaps": lightmap_entries,
+        "meshes": mesh_compat,
+        "meshesByName": {entry["objectName"]: entry for entry in lightmap_entries},
+    }
+
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(manifest, handle, indent=2)
+        handle.write("\n")
+
+    log_info(f"Wrote manifest: {json_path(manifest_path)} ({len(lightmap_entries)} entries)")
+    return manifest_path
+
+
+# --------------------------------------------------
+# BAKE LOOP
+# --------------------------------------------------
+
+
+def bake_mesh_lightmap(
+    original_obj,
+    output_dir: str,
+    profile,
+    proxy=None,
+    skip_uv: bool = False,
+):
+    """Proxy bake workflow for one mesh using *profile* settings."""
+    log_info(f"Starting bake for: {original_obj.name}")
+    started = time.perf_counter()
+
+    owns_proxy = proxy is None
+    if owns_proxy:
+        proxy = create_proxy(original_obj)
+
+    bake_material = None
+    neutral_contributor_material = None
+    visibility_state = None
+    material_override_states = []
+    preserve_uv = should_preserve_existing_lightmap_uv(original_obj)
+    neutral_target_albedo = read_lightmap_neutral_albedo(original_obj)
+    original_uv_snapshot = snapshot_lightmap_uv_state(original_obj) if preserve_uv else None
+
+    try:
+        if not skip_uv:
+            if preserve_uv:
+                preserve_existing_lightmap_uv(proxy)
+            else:
+                run_uv_pipeline(proxy, profile, settings_obj=original_obj)
+
+        image = get_or_create_lightmap_image(original_obj.name)
+        log_info(f"Image created: {image.name}")
+
+        bake_material = create_bake_material(
+            original_obj, neutral_albedo=neutral_target_albedo
+        )
+        assign_bake_material(proxy, bake_material)
+        set_active_bake_image(bake_material, image)
+        if not preserve_uv:
+            activate_lightmap_uv(proxy)
+
+        visibility_state = hide_original_for_proxy_bake(original_obj)
+
+        override_targets = []
+        view_layer = bpy.context.view_layer
+        for obj in bpy.context.scene.objects:
+            if obj.type != "MESH" or obj == proxy:
+                continue
+            if obj.hide_render or not is_mesh_visible_in_view_layer(obj, view_layer):
+                continue
+            if read_lightmap_neutral_albedo(obj):
+                override_targets.append(obj)
+
+        if override_targets:
+            neutral_contributor_material = create_neutral_contributor_material()
+            for obj in override_targets:
+                snapshot = apply_material_override(obj, neutral_contributor_material)
+                if snapshot is not None:
+                    material_override_states.append(snapshot)
+            log_info(
+                f"Applied neutral albedo override to {len(material_override_states)} "
+                f"contributing object(s) for bake: {original_obj.name}"
+            )
+            flush_view_layer()
+
+        select_single_object(proxy)
+        flush_view_layer()
+
+        log_info(f"Baking direct+indirect diffuse: {original_obj.name} (via proxy)")
+        ensure_object_mode()
+        bpy.ops.object.bake(type="DIFFUSE")
+        image.update()
+
+        set_active_bake_image(bake_material, image)
+        ao_path = bake_and_apply_ao(
+            proxy,
+            bake_material,
+            image,
+            original_obj,
+            output_dir,
+            profile,
+        )
+
+        png_path = os.path.join(output_dir, lightmap_png_filename(original_obj.name))
+        save_lightmap_image(image, png_path)
+
+        transfer_lightmap_uv_to_original(original_obj, proxy)
+        if preserve_uv:
+            restore_lightmap_uv_state(original_obj, original_uv_snapshot)
+            log_info(
+                f"Verified original lightmap UV unchanged "
+                f"({PROP_OVERWRITE_LIGHTMAP}=False): {original_obj.name}"
+            )
+        entry = build_manifest_entry(original_obj, png_path, profile, ao_path)
+
+        elapsed = time.perf_counter() - started
+        log_info(f"Finished bake for: {original_obj.name} ({elapsed:.1f}s)")
+        return entry
+
+    finally:
+        restore_material_overrides(material_override_states)
+        if preserve_uv:
+            restore_lightmap_uv_state(original_obj, original_uv_snapshot)
+        if visibility_state is not None:
+            restore_visibility(original_obj, visibility_state)
+            log_info(f"Restored original visibility: {original_obj.name}")
+        if owns_proxy:
+            delete_proxy(proxy)
+        remove_temporary_material(bake_material)
+        remove_temporary_material(neutral_contributor_material)
+        ensure_object_mode()
+        flush_view_layer()
+
+
+def prepare_profile_proxies(objects, profile) -> dict:
+    """Create proxies and run the UV pipeline for each object in *objects*."""
+    proxy_map = {}
+    for obj in objects:
+        proxy = create_proxy(obj)
+        if should_preserve_existing_lightmap_uv(obj):
+            preserve_existing_lightmap_uv(proxy)
+        else:
+            run_uv_pipeline(proxy, profile, settings_obj=obj)
+        proxy_map[obj] = proxy
+    return proxy_map
+
+
+def perform_bake(
+    profile,
+    objects,
+    output_dir: str,
+    proxy_map=None,
+) -> tuple[list, list[tuple[str, str]]]:
+    """Bake all *objects* for *profile*.
+
+    When *proxy_map* is supplied, UV preparation is skipped and proxies are not removed.
+    """
+    owns_proxies = proxy_map is None
+    if proxy_map is None:
+        proxy_map = prepare_profile_proxies(objects, profile)
+
+    entries = []
+    errors = []
+
+    try:
+        for index, obj in enumerate(objects, start=1):
+            log_info(f"Baking object {index}/{len(objects)}: {obj.name}")
+            try:
+                entry = bake_mesh_lightmap(
+                    obj,
+                    output_dir,
+                    profile,
+                    proxy=proxy_map[obj],
+                    skip_uv=True,
+                )
+                entries.append(entry)
+            except Exception as exc:
+                errors.append((obj.name, str(exc)))
+                log_error(f"Failed bake for {obj.name}: {exc}")
+                traceback.print_exc()
+                ensure_object_mode()
+                flush_view_layer()
+    finally:
+        if owns_proxies:
+            for proxy in proxy_map.values():
+                delete_proxy(proxy)
+
+    return entries, errors
+
+
+def save_outputs(_profile, manifest_entries, output_dir: str) -> str | None:
+    """Write manifest for completed bakes (shared output folder)."""
+    if not manifest_entries:
+        log_warn("No lightmaps baked — manifest not written")
+        return None
+    return write_manifest(output_dir, manifest_entries)
+
+
+def cleanup_profile_run(proxies) -> None:
+    """Remove any leftover temporary proxies."""
+    for proxy in proxies or []:
+        delete_proxy(proxy)
+
+
+def process_bake_profile(
+    profile,
+    scene,
+    view_layer,
+    output_dir: str,
+) -> tuple[list, ProfileBakeStats]:
+    stats = ProfileBakeStats(profile_name=profile.name)
+    started = time.perf_counter()
+
+    log_section(f"Bake Profile: {profile.name}")
+    objects = collect_profile_objects(profile, scene, view_layer)
+    stats.objects_processed = len(objects)
+    log_info(f"Objects: {len(objects)}")
+
+    if not objects:
+        log_warn(f"Profile '{profile.name}' has no assigned objects — skipping")
+        return [], stats
+
+    valid_objects, skipped = validate_objects(objects, view_layer)
+    stats.objects_skipped = len(skipped)
+
+    if not valid_objects:
+        log_warn(f"Profile '{profile.name}' has no valid objects to bake — skipping")
+        return [], stats
+
+    update_profile_geometry_stats(stats, valid_objects)
+
+    log_info("Preparing UVs...")
+    proxy_map = {}
+    try:
+        proxy_map = prepare_profile_proxies(valid_objects, profile)
+
+        log_info("Validating...")
+        uv_ok, uv_issues = validate_uv_pack(list(proxy_map.values()))
+        if not uv_ok:
+            stats.issues.extend(uv_issues)
+            log_error(
+                f"UV validation failed for profile '{profile.name}' — skipping bake"
+            )
+            return [], stats
+
+        update_profile_geometry_stats(stats, valid_objects)
+
+        log_info("Bake Started...")
+        device_info = configure_cycles(profile, scene)
+        if device_info["device"] != "GPU":
+            log_error(
+                f"GPU-only baking required for profile '{profile.name}' "
+                "but no compatible GPU was found — skipping"
+            )
+            return [], stats
+
+        entries, errors = perform_bake(
+            profile,
+            valid_objects,
+            output_dir,
+            proxy_map=proxy_map,
+        )
+        stats.objects_baked = len(entries)
+        stats.objects_failed = len(errors)
+        stats.bake_seconds = time.perf_counter() - started
+
+        log_info("Bake Finished")
+        log_info(f"Time: {format_duration(stats.bake_seconds)}")
+        log_info(f"Objects Processed: {stats.objects_processed}")
+        log_info(f"Triangles: {stats.triangles:,}")
+        log_info(f"UV Islands: {stats.uv_islands}")
+        log_info(f"Atlas Fill %: {stats.atlas_fill_percent:.1f}")
+        log_info(f"Pack Efficiency: {stats.pack_efficiency:.1f}")
+
+        return entries, stats
+    finally:
+        cleanup_profile_run(list(proxy_map.values()))
+
+
+def main():
+    log_info(f"{GENERATOR_NAME} — profile-driven lightmap bake (proxy workflow)")
+    output_dir = ensure_output_dir(OUTPUT_DIR)
+    log_info(f"Output directory: {json_path(output_dir)}")
+
+    scene = bpy.context.scene
+    if not addon_profiles_available(scene):
+        log_error(
+            "Lightmap Baker add-on is required. Enable it and create bake profiles."
+        )
+        return
+
+    profiles = get_enabled_profiles(scene)
+    if not profiles:
+        log_error("No enabled bake profiles found in the scene.")
+        return
+
+    render_state = capture_render_state(scene)
+    world_ao_state = capture_world_ao_state(scene)
+    selection_state = capture_selection_context()
+    view_layer = bpy.context.view_layer
+
+    log_unassigned_selected_meshes(scene, view_layer)
+
+    manifest_entries = []
+    profile_stats: list[ProfileBakeStats] = []
+    hidden_mesh_render_overrides = []
+    pipeline_started = time.perf_counter()
+
+    try:
+        scene.render.engine = "CYCLES"
+        hidden_mesh_render_overrides = suppress_hidden_meshes_from_render(
+            scene, view_layer
+        )
+
+        for profile in profiles:
+            entries, stats = process_bake_profile(
+                profile,
+                scene,
+                view_layer,
+                output_dir,
+            )
+            manifest_entries.extend(entries)
+            profile_stats.append(stats)
+
+        if manifest_entries:
+            save_outputs(None, manifest_entries, output_dir)
+        else:
+            log_warn("No lightmaps baked — manifest not written")
+
+    finally:
+        baked_objects = []
+        for profile in profiles:
+            baked_objects.extend(collect_profile_objects(profile, scene, view_layer))
+        restore_hidden_mesh_render_overrides(hidden_mesh_render_overrides)
+        restore_primary_render_uv_for_meshes(baked_objects)
+        restore_world_ao_state(scene, world_ao_state)
+        restore_render_state(scene, render_state)
+        restore_selection_context(selection_state)
+        log_info(f"Restored render engine: {scene.render.engine}")
+
+    log_section("Bake Summary")
+    log_info(f"Profiles processed: {len(profiles)}")
+    log_info(f"Total baked: {len(manifest_entries)}")
+    log_info(f"Total time: {format_duration(time.perf_counter() - pipeline_started)}")
+
+    for stats in profile_stats:
+        log_info(
+            f"  {stats.profile_name}: baked={stats.objects_baked}, "
+            f"skipped={stats.objects_skipped}, failed={stats.objects_failed}, "
+            f"time={format_duration(stats.bake_seconds)}"
+        )
+        for issue in stats.issues:
+            log_info(f"    issue: {issue}")
+
+    if manifest_entries:
+        log_info("Output images:")
+        for entry in manifest_entries:
+            line = f"  {entry['lightmap']} ({entry.get('profileName', 'unknown')})"
+            if entry.get("ao"):
+                line += f" (+ AO: {entry['ao']})"
+            log_info(line)
+        log_info(f"Manifest: {json_path(os.path.join(output_dir, MANIFEST_FILENAME))}")
+    else:
+        log_warn("No output files were written")
+
+
+main()
