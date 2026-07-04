@@ -31,10 +31,10 @@ LIGHTMAP_UV_NAME = "LightMap"
 LIGHTMAP_UV_INDEX = 1
 LIGHTMAP_UV_CHANNEL = 1
 
-LIGHTMAP_BAKE_MARGIN_PX = 16
+LIGHTMAP_BAKE_MARGIN_PX = 24
 LIGHTMAP_UV_MARGIN_MIN = 0.001
 LIGHTMAP_UV_EDGE_INSET_PX = 4
-LIGHTMAP_PACK_BOX_DIV = 12
+LIGHTMAP_PACK_BOX_DIV = 6
 
 MANIFEST_FILENAME = "lightmap_manifest.json"
 GENERATOR_NAME = "AutoLightMapColor1.py"
@@ -44,19 +44,21 @@ BAKE_MAT_PREFIX = "__LM_COLOR1_BAKE_MAT__"
 BAKE_IMAGE_NODE_NAME = "__LM_COLOR1_BAKE_IMAGE__"
 
 BAKE_SETTINGS = {
-    "noise_threshold": 0.01,
-    "max_samples": 512,
-    "min_samples": 0,
-    "use_denoise": False,
+    # Lower threshold + higher min_samples reduce early adaptive termination on large
+    # flat surfaces (ceilings, floors) that otherwise stay grainy.
+    "noise_threshold": 0.0005,
+    "max_samples": 2048,
+    "min_samples": 512,
+    "use_denoise": True,
     "bake_bleed_reduction": 0.0,
     "indirect_intensity": 1.0,
     "shadow_preserve": 1.0,
     "enable_post_processing": False,
     "bake_ao": True,
-    "ao_strength": 0.35,
-    "ao_samples": 128,
+    "ao_strength": 0,
+    "ao_samples": 512,
     "save_ao_map": True,
-    "world_ao_enabled": True,
+    "world_ao_enabled": False,
 }
 
 USE_GPU_BAKE = True
@@ -73,6 +75,7 @@ PROP_OVERWRITE_LIGHTMAP_ALIASES = (
     "Overwrite_LightMap",
     "overwrite_lightmap",
 )
+PROP_LIGHTMAP_NEUTRAL_ALBEDO = "lightmap_neutral_albedo"
 
 
 # --------------------------------------------------
@@ -467,13 +470,13 @@ def apply_diffuse_bake_pass_settings(target_scene) -> None:
     ao_on_pass = apply_bake_ambient_occlusion_flags(bake)
 
     if hasattr(target_scene.cycles, "clamp_indirect"):
-        target_scene.cycles.clamp_indirect = 1.0
+        target_scene.cycles.clamp_indirect = 0.0
     if hasattr(target_scene.cycles, "sample_clamp_indirect"):
-        target_scene.cycles.sample_clamp_indirect = 1.0
+        target_scene.cycles.sample_clamp_indirect = 0.0
     if hasattr(target_scene.cycles, "clamp_direct"):
-        target_scene.cycles.clamp_direct = 1.0
+        target_scene.cycles.clamp_direct = 0.0
     if hasattr(target_scene.cycles, "sample_clamp_direct"):
-        target_scene.cycles.sample_clamp_direct = 1.0
+        target_scene.cycles.sample_clamp_direct = 0.0
 
     log_info(
         "Diffuse bake passes: direct=True, indirect=True, color=False"
@@ -633,6 +636,20 @@ def remove_temporary_material(material) -> None:
 # --------------------------------------------------
 
 
+def configure_neutral_principled_bsdf(bsdf) -> None:
+    bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    bsdf.inputs["Roughness"].default_value = 1.0
+    bsdf.inputs["Metallic"].default_value = 0.0
+    if "Specular IOR Level" in bsdf.inputs:
+        bsdf.inputs["Specular IOR Level"].default_value = 0.0
+    elif "Specular" in bsdf.inputs:
+        bsdf.inputs["Specular"].default_value = 0.0
+    if "Emission Strength" in bsdf.inputs:
+        bsdf.inputs["Emission Strength"].default_value = 0.0
+    elif "Emission" in bsdf.inputs:
+        bsdf.inputs["Emission"].default_value = (0.0, 0.0, 0.0, 1.0)
+
+
 def collect_upstream_nodes(node, node_tree, collected=None):
     if collected is None:
         collected = set()
@@ -746,7 +763,7 @@ def copy_base_color_network(source_material, target_material, target_bsdf) -> No
     target_links.new(new_root.outputs[root_socket_name], target_bsdf.inputs["Base Color"])
 
 
-def create_bake_material(original_obj):
+def create_bake_material(original_obj, neutral_albedo: bool = False):
     """Temporary bake material preserving original Base Color textures/procedurals."""
     mat_name = bake_material_name(original_obj.name)
     existing = bpy.data.materials.get(mat_name)
@@ -764,16 +781,7 @@ def create_bake_material(original_obj):
 
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
     bsdf.location = (250, 0)
-    bsdf.inputs["Roughness"].default_value = 1.0
-    bsdf.inputs["Metallic"].default_value = 0.0
-    if "Specular IOR Level" in bsdf.inputs:
-        bsdf.inputs["Specular IOR Level"].default_value = 0.0
-    elif "Specular" in bsdf.inputs:
-        bsdf.inputs["Specular"].default_value = 0.0
-    if "Emission Strength" in bsdf.inputs:
-        bsdf.inputs["Emission Strength"].default_value = 0.0
-    elif "Emission" in bsdf.inputs:
-        bsdf.inputs["Emission"].default_value = (0.0, 0.0, 0.0, 1.0)
+    configure_neutral_principled_bsdf(bsdf)
 
     image_node = nodes.new("ShaderNodeTexImage")
     image_node.name = BAKE_IMAGE_NODE_NAME
@@ -781,8 +789,9 @@ def create_bake_material(original_obj):
 
     links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
 
-    source_material = get_primary_source_material(original_obj)
-    copy_base_color_network(source_material, material, bsdf)
+    if not neutral_albedo:
+        source_material = get_primary_source_material(original_obj)
+        copy_base_color_network(source_material, material, bsdf)
     material.node_tree.update_tag()
     return material
 
@@ -808,6 +817,114 @@ def set_active_bake_image(bake_material, image) -> None:
     nodes.active = image_node
     image_node.select = True
     bake_material.node_tree.update_tag()
+
+
+def create_neutral_contributor_material() -> bpy.types.Material:
+    mat_name = f"{BAKE_MAT_PREFIX}NEUTRAL_ALBEDO"
+    existing = bpy.data.materials.get(mat_name)
+    if existing is not None:
+        bpy.data.materials.remove(existing, do_unlink=True)
+
+    material = bpy.data.materials.new(mat_name)
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    links = material.node_tree.links
+    nodes.clear()
+
+    output = nodes.new("ShaderNodeOutputMaterial")
+    output.location = (300, 0)
+
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (0, 0)
+    configure_neutral_principled_bsdf(bsdf)
+
+    links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
+    material.node_tree.update_tag()
+    return material
+
+
+def capture_material_override_state(obj):
+    return {
+        "object": obj,
+        "slot_count": len(obj.material_slots),
+        "materials": [slot.material for slot in obj.material_slots],
+        "links": [getattr(slot, "link", None) for slot in obj.material_slots],
+        "active_material_index": getattr(obj, "active_material_index", 0),
+    }
+
+
+def apply_material_override(obj, material) -> dict | None:
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return None
+
+    snapshot = capture_material_override_state(obj)
+
+    if snapshot["slot_count"] == 0:
+        mesh.materials.append(material)
+        if obj.material_slots:
+            slot = obj.material_slots[0]
+            if hasattr(slot, "link"):
+                slot.link = "OBJECT"
+            slot.material = material
+    else:
+        for slot in obj.material_slots:
+            if hasattr(slot, "link"):
+                slot.link = "OBJECT"
+            slot.material = material
+
+    obj.update_tag(refresh={"DATA"})
+    return snapshot
+
+
+def restore_material_override_state(snapshot) -> None:
+    if not snapshot:
+        return
+
+    obj = snapshot.get("object")
+    if obj is None:
+        return
+
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return
+
+    slot_count = int(snapshot.get("slot_count", 0))
+    materials = list(snapshot.get("materials", []))
+    links = list(snapshot.get("links", []))
+
+    if slot_count == 0:
+        mesh.materials.clear()
+    else:
+        for index in range(min(slot_count, len(obj.material_slots))):
+            slot = obj.material_slots[index]
+            link = links[index] if index < len(links) else None
+            if link is not None and hasattr(slot, "link"):
+                slot.link = link
+            slot.material = materials[index] if index < len(materials) else None
+
+        active_index = int(snapshot.get("active_material_index", 0))
+        if len(obj.material_slots) > 0:
+            obj.active_material_index = max(0, min(active_index, len(obj.material_slots) - 1))
+
+    obj.update_tag(refresh={"DATA"})
+
+
+def restore_material_overrides(snapshots) -> None:
+    if not snapshots:
+        return
+
+    restored = 0
+    for snapshot in snapshots:
+        try:
+            restore_material_override_state(snapshot)
+            restored += 1
+        except ReferenceError:
+            continue
+
+    if restored:
+        log_info(f"Restored bake material overrides on {restored} object(s)")
+        flush_view_layer()
 
 
 def get_or_create_lightmap_image(object_name: str):
@@ -993,6 +1110,23 @@ def _parse_bool_prop(raw) -> bool | None:
     if text in ("true", "1", "yes", "on"):
         return True
     return None
+
+
+def read_lightmap_neutral_albedo(obj) -> bool:
+    """True when the object should contribute neutral white albedo during bake."""
+    raw = _read_object_custom_prop(obj, PROP_LIGHTMAP_NEUTRAL_ALBEDO)
+    if raw is None:
+        return False
+
+    parsed = _parse_bool_prop(raw)
+    if parsed is None:
+        log_warn(
+            f"invalid {PROP_LIGHTMAP_NEUTRAL_ALBEDO}={raw!r} on '{obj.name}' — "
+            "expected true/false-like value; ignoring"
+        )
+        return False
+
+    return parsed
 
 
 def read_overwrite_lightmap(obj) -> bool:
@@ -1464,8 +1598,11 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
 
     proxy = None
     bake_material = None
+    neutral_contributor_material = None
     visibility_state = None
+    material_override_states = []
     preserve_uv = should_preserve_existing_lightmap_uv(original_obj)
+    neutral_target_albedo = read_lightmap_neutral_albedo(original_obj)
     original_uv_snapshot = snapshot_lightmap_uv_state(original_obj) if preserve_uv else None
 
     try:
@@ -1478,7 +1615,9 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
         image = get_or_create_lightmap_image(original_obj.name)
         log_info(f"Image created: {image.name}")
 
-        bake_material = create_bake_material(original_obj)
+        bake_material = create_bake_material(
+            original_obj, neutral_albedo=neutral_target_albedo
+        )
         assign_bake_material(proxy, bake_material)
         set_active_bake_image(bake_material, image)
         if not preserve_uv:
@@ -1487,6 +1626,28 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
         # Original and proxy share the same transform — hide original so Cycles
         # hits the proxy surface instead of the coplanar source mesh (black bake).
         visibility_state = hide_original_for_proxy_bake(original_obj)
+
+        override_targets = []
+        view_layer = bpy.context.view_layer
+        for obj in bpy.context.scene.objects:
+            if obj.type != "MESH" or obj == proxy:
+                continue
+            if obj.hide_render or not is_mesh_visible_in_view_layer(obj, view_layer):
+                continue
+            if read_lightmap_neutral_albedo(obj):
+                override_targets.append(obj)
+
+        if override_targets:
+            neutral_contributor_material = create_neutral_contributor_material()
+            for obj in override_targets:
+                snapshot = apply_material_override(obj, neutral_contributor_material)
+                if snapshot is not None:
+                    material_override_states.append(snapshot)
+            log_info(
+                f"Applied neutral albedo override to {len(material_override_states)} "
+                f"contributing object(s) for bake: {original_obj.name}"
+            )
+            flush_view_layer()
 
         select_single_object(proxy)
         flush_view_layer()
@@ -1518,6 +1679,7 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
         return entry
 
     finally:
+        restore_material_overrides(material_override_states)
         if preserve_uv:
             restore_lightmap_uv_state(original_obj, original_uv_snapshot)
         if visibility_state is not None:
@@ -1525,6 +1687,7 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
             log_info(f"Restored original visibility: {original_obj.name}")
         delete_proxy(proxy)
         remove_temporary_material(bake_material)
+        remove_temporary_material(neutral_contributor_material)
         ensure_object_mode()
         flush_view_layer()
 
