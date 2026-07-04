@@ -1,11 +1,12 @@
 """
-AutoLightMapColor1.py — Blender 4.1
+AutoLightmapv5.py — Blender 4.1
 
 Per-mesh indirect-diffuse lightmaps using a proxy bake workflow.
 Original meshes are never modified during baking; LightMap UVs are transferred
 from the proxy after each successful bake.
 
-Bakes currently selected mesh object(s) visible in the active view layer.
+Bake settings and UV packing parameters are read from Lightmap Baker profiles
+assigned to each mesh object (scene.lightmap_bake_profiles / object.lightmap_profile).
 """
 
 from __future__ import annotations
@@ -13,15 +14,31 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 import traceback
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 import bpy
 from mathutils import Vector
 
+# Ensure the project folder is importable when run as a Text Editor script.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
+try:
+    from lightmap_baker.utils import iter_objects_with_profile
+except ImportError as exc:
+    raise ImportError(
+        "Lightmap Baker add-on module not found. Enable the add-on and ensure "
+        "lightmap_baker is on Blender's Python path."
+    ) from exc
+
 # --------------------------------------------------
-# CONFIG
+# CONFIG (non-profile constants)
 # --------------------------------------------------
 
 OUTPUT_DIR = r"C:\Users\Afrom\Documents\Blender\lightmaps"
@@ -31,42 +48,21 @@ LIGHTMAP_UV_NAME = "LightMap"
 LIGHTMAP_UV_INDEX = 1
 LIGHTMAP_UV_CHANNEL = 1
 
-LIGHTMAP_BAKE_MARGIN_PX = 24
-LIGHTMAP_UV_MARGIN_MIN = 0.001
-LIGHTMAP_UV_EDGE_INSET_PX = 4
-LIGHTMAP_PACK_BOX_DIV = 6
-
 MANIFEST_FILENAME = "lightmap_manifest.json"
-GENERATOR_NAME = "AutoLightMapColor1.py"
+GENERATOR_NAME = "AutoLightmapv5.py"
 
 PROXY_PREFIX = "__LM_COLOR1_PROXY__"
 BAKE_MAT_PREFIX = "__LM_COLOR1_BAKE_MAT__"
 BAKE_IMAGE_NODE_NAME = "__LM_COLOR1_BAKE_IMAGE__"
-
-BAKE_SETTINGS = {
-    # Lower threshold + higher min_samples reduce early adaptive termination on large
-    # flat surfaces (ceilings, floors) that otherwise stay grainy.
-    "noise_threshold": 0.0005,
-    "max_samples": 2048,
-    "min_samples": 512,
-    "use_denoise": True,
-    "bake_bleed_reduction": 0.0,
-    "indirect_intensity": 1.0,
-    "shadow_preserve": 1.0,
-    "enable_post_processing": False,
-    "bake_ao": True,
-    "ao_strength": 0,
-    "ao_samples": 512,
-    "save_ao_map": True,
-    "world_ao_enabled": False,
-}
 
 USE_GPU_BAKE = True
 CYCLES_COMPUTE_DEVICE = ""
 COMPUTE_DEVICE_PRIORITY = ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI")
 _AMD_GPU_MARKERS = ("AMD", "RADEON", "RX ")
 
-LOG_PREFIX = "[LIGHTMAP-COLOR1]"
+LOG_PREFIX = "[LIGHTMAP-V5]"
+UV_VALIDATE_EPSILON = 1e-4
+UV_OUT_OF_BOUNDS_TOLERANCE = 0.02
 
 # Object custom property: when "False" (case-insensitive), keep existing LightMap UV.
 PROP_OVERWRITE_LIGHTMAP = "Ovewrite_LightMap"
@@ -93,6 +89,160 @@ def log_warn(message: str) -> None:
 
 def log_error(message: str) -> None:
     print(f"{LOG_PREFIX} ERROR: {message}")
+
+
+def log_section(title: str) -> None:
+    bar = "=" * 30
+    print(f"{LOG_PREFIX} {bar}")
+    print(f"{LOG_PREFIX} {title}")
+    print(f"{LOG_PREFIX} {bar}")
+
+
+def format_duration(seconds: float) -> str:
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    return f"{minutes:02d}:{secs:02d}"
+
+
+# --------------------------------------------------
+# BAKE PROFILE INTEGRATION
+# --------------------------------------------------
+
+
+@dataclass
+class ProfileBakeStats:
+    profile_name: str
+    objects_processed: int = 0
+    objects_baked: int = 0
+    objects_skipped: int = 0
+    objects_failed: int = 0
+    triangles: int = 0
+    uv_islands: int = 0
+    atlas_fill_percent: float = 0.0
+    pack_efficiency: float = 0.0
+    bake_seconds: float = 0.0
+    issues: list[str] = field(default_factory=list)
+
+
+def addon_profiles_available(scene) -> bool:
+    return hasattr(scene, "lightmap_bake_profiles")
+
+
+def profile_bake_settings(profile) -> dict[str, Any]:
+    """Snapshot profile bake settings as a plain dict for manifest/logging."""
+    return {
+        "noise_threshold": float(profile.noise_threshold),
+        "max_samples": int(profile.max_samples),
+        "min_samples": int(profile.min_samples),
+        "use_denoise": bool(profile.use_denoise),
+        "bake_bleed_reduction": float(profile.bake_bleed_reduction),
+        "indirect_intensity": float(profile.indirect_intensity),
+        "shadow_preserve": float(profile.shadow_preserve),
+        "enable_post_processing": bool(profile.enable_post_processing),
+        "bake_ao": bool(profile.bake_ao),
+        "ao_strength": float(profile.ao_strength),
+        "ao_samples": int(profile.ao_samples),
+        "save_ao_map": bool(profile.save_ao_map),
+        "world_ao_enabled": bool(profile.world_ao_enabled),
+        "bake_margin": int(profile.bake_margin),
+        "uv_margin_minimum": float(profile.uv_margin_minimum),
+        "uv_edge_inset": int(profile.uv_edge_inset),
+        "pack_box_division": int(profile.pack_box_division),
+    }
+
+
+def get_enabled_profiles(scene) -> list:
+    if not addon_profiles_available(scene):
+        return []
+    return [profile for profile in scene.lightmap_bake_profiles if profile.enabled]
+
+
+def collect_profile_objects(profile, scene, view_layer=None):
+    """Return mesh objects assigned to *profile* in the active view layer."""
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+
+    objects = []
+    for obj in iter_objects_with_profile(scene, profile.uuid):
+        if obj.name not in view_layer.objects:
+            continue
+        objects.append(obj)
+    return sorted(objects, key=lambda item: item.name)
+
+
+def validate_objects(objects, view_layer=None) -> tuple[list, list[tuple[str, str]]]:
+    """Split *objects* into bake candidates and skipped (name, reason) pairs."""
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+
+    valid = []
+    skipped = []
+    for obj in objects:
+        ok, reason = is_bake_candidate(obj, view_layer)
+        if ok:
+            valid.append(obj)
+        else:
+            skipped.append((obj.name, reason))
+            log_warn(f"Skipping {obj.name}: {reason}")
+    return valid, skipped
+
+
+def log_unassigned_selected_meshes(scene, view_layer=None) -> None:
+    """Log selected meshes that have no bake profile assignment."""
+    if view_layer is None:
+        view_layer = bpy.context.view_layer
+
+    for obj in get_selected_mesh_objects():
+        if obj.type != "MESH":
+            continue
+        if obj.lightmap_profile:
+            continue
+        log_warn(f"Skipped {obj.name}: No Bake Profile assigned.")
+
+
+# --------------------------------------------------
+# FUTURE HOOKS (not implemented)
+# --------------------------------------------------
+
+
+def custom_atlas_packer(_profile, _objects) -> None:
+    """TODO: Replace lightmap_pack with a custom atlas packing algorithm."""
+    raise NotImplementedError
+
+
+def multi_atlas_support(_profile, _objects) -> None:
+    """TODO: Split large profile bakes across multiple atlases."""
+    raise NotImplementedError
+
+
+def auto_atlas_resolution(_profile, _objects) -> None:
+    """TODO: Automatically choose atlas resolution from geometry."""
+    raise NotImplementedError
+
+
+def texel_density_analyzer(_profile, _objects) -> None:
+    """TODO: Analyze texel density before packing."""
+    raise NotImplementedError
+
+
+def island_rotation_optimizer(_profile, _objects) -> None:
+    """TODO: Optimize island rotation prior to packing."""
+    raise NotImplementedError
+
+
+def atlas_occupancy_report(_profile, _objects) -> None:
+    """TODO: Report atlas occupancy after packing."""
+    raise NotImplementedError
+
+
+def progressive_baking(_profile, _objects) -> None:
+    """TODO: Progressive / tiled baking for large profiles."""
+    raise NotImplementedError
+
+
+def incremental_rebuilds(_profile, _objects) -> None:
+    """TODO: Incrementally rebuild only changed profile members."""
+    raise NotImplementedError
 
 
 # --------------------------------------------------
@@ -361,8 +511,8 @@ def setup_cycles_bake_device(target_scene, use_gpu: bool = USE_GPU_BAKE):
     return {"device": "CPU", "backend": None, "names": ""}
 
 
-def apply_bake_settings(target_scene) -> None:
-    settings = BAKE_SETTINGS
+def apply_bake_settings(target_scene, profile) -> None:
+    settings = profile_bake_settings(profile)
 
     target_scene.cycles.use_adaptive_sampling = True
     target_scene.cycles.adaptive_threshold = float(settings["noise_threshold"])
@@ -426,9 +576,10 @@ def capture_world_ao_state(scene):
     return state
 
 
-def apply_cycles_world_ao(scene, enabled: bool | None = None) -> None:
+def apply_cycles_world_ao(scene, profile, enabled: bool | None = None) -> None:
     """Enable Cycles world ambient occlusion for baking (when supported)."""
-    enabled = bool(BAKE_SETTINGS.get("world_ao_enabled", True) if enabled is None else enabled)
+    settings = profile_bake_settings(profile)
+    enabled = bool(settings["world_ao_enabled"] if enabled is None else enabled)
     world = scene.world
     if world is None:
         log_warn("Scene has no world — skipping Cycles ambient occlusion")
@@ -484,17 +635,17 @@ def apply_diffuse_bake_pass_settings(target_scene) -> None:
     )
 
 
-def setup_ao_bake_pass(target_scene) -> None:
+def setup_ao_bake_pass(target_scene, profile) -> None:
     bake = target_scene.render.bake
     bake.use_clear = True
-    bake.margin = int(LIGHTMAP_BAKE_MARGIN_PX)
+    bake.margin = int(profile.bake_margin)
     if hasattr(bake, "margin_type"):
         bake.margin_type = "ADJACENT_FACES"
-    target_scene.cycles.samples = int(BAKE_SETTINGS.get("ao_samples", 128))
+    target_scene.cycles.samples = int(profile.ao_samples)
     log_info(f"AO bake pass: samples={target_scene.cycles.samples}")
 
 
-def setup_bake_pass(target_scene) -> None:
+def setup_bake_pass(target_scene, profile) -> None:
     bake = target_scene.render.bake
     bake.use_selected_to_active = False
     bake.use_clear = True
@@ -503,10 +654,10 @@ def setup_bake_pass(target_scene) -> None:
     bake.use_pass_color = False
     if hasattr(bake, "use_pass_diffuse"):
         bake.use_pass_diffuse = True
-    bake.margin = int(LIGHTMAP_BAKE_MARGIN_PX)
+    bake.margin = int(profile.bake_margin)
 
     apply_bake_ambient_occlusion_flags(bake)
-    apply_cycles_world_ao(target_scene, True)
+    apply_cycles_world_ao(target_scene, profile, True)
 
     if hasattr(bake, "margin_type"):
         bake.margin_type = "ADJACENT_FACES"
@@ -517,12 +668,19 @@ def setup_bake_pass(target_scene) -> None:
     if hasattr(bake, "use_cage"):
         bake.use_cage = False
 
-    apply_bake_settings(target_scene)
+    apply_bake_settings(target_scene, profile)
     apply_diffuse_bake_pass_settings(target_scene)
     log_info(
-        f"Bake pass: direct+indirect diffuse, margin={LIGHTMAP_BAKE_MARGIN_PX}px "
+        f"Bake pass: direct+indirect diffuse, margin={profile.bake_margin}px "
         f"(ADJACENT_FACES), view_from=ABOVE_SURFACE"
     )
+
+
+def configure_cycles(profile, target_scene) -> dict:
+    """Configure Cycles render/bake settings from *profile*."""
+    device_info = setup_cycles_bake_device(target_scene)
+    setup_bake_pass(target_scene, profile)
+    return device_info
 
 
 # --------------------------------------------------
@@ -1011,12 +1169,14 @@ def bake_and_apply_ao(
     lightmap_image,
     original_obj,
     output_dir: str,
+    profile,
 ) -> str | None:
     """
     Dedicated AO pass (Blender 4.1) when use_pass_ambient_occlusion is unavailable.
     Multiplies AO into the lightmap and optionally saves a separate AO PNG.
     """
-    if not BAKE_SETTINGS.get("bake_ao", True):
+    settings = profile_bake_settings(profile)
+    if not settings["bake_ao"]:
         return None
 
     scene = bpy.context.scene
@@ -1030,24 +1190,24 @@ def bake_and_apply_ao(
     select_single_object(proxy)
     flush_view_layer()
 
-    setup_ao_bake_pass(scene)
-    apply_cycles_world_ao(scene, True)
+    setup_ao_bake_pass(scene, profile)
+    apply_cycles_world_ao(scene, profile, True)
 
     log_info(f"Baking AO: {original_obj.name} (via proxy)")
     ensure_object_mode()
     bpy.ops.object.bake(type="AO")
     ao_image.update()
 
-    strength = float(BAKE_SETTINGS.get("ao_strength", 0.35))
+    strength = float(settings["ao_strength"])
     multiply_ao_into_image(lightmap_image, ao_image, strength)
 
     ao_path = None
-    if BAKE_SETTINGS.get("save_ao_map", True):
+    if settings["save_ao_map"]:
         ao_path = os.path.join(output_dir, ao_png_filename(original_obj.name))
         save_lightmap_image(ao_image, ao_path)
 
     remove_temp_image(ao_image)
-    apply_bake_settings(scene)
+    apply_bake_settings(scene, profile)
     apply_diffuse_bake_pass_settings(scene)
     return ao_path
 
@@ -1313,12 +1473,243 @@ def move_uv_layer_to_index(mesh, layer_name: str, target_index: int) -> None:
     _restore_uv_layers(mesh, ordered)
 
 
-def uv_margin_normalized(resolution: int, margin_px: int) -> float:
+def uv_margin_normalized(resolution: int, margin_px: int, uv_margin_min: float) -> float:
     size = max(1, int(resolution))
     px = max(0, int(margin_px))
+    minimum = max(0.0, float(uv_margin_min))
     if px <= 0:
-        return LIGHTMAP_UV_MARGIN_MIN
-    return max(LIGHTMAP_UV_MARGIN_MIN, px / float(size))
+        return minimum
+    return max(minimum, px / float(size))
+
+
+def _mesh_triangle_count(mesh) -> int:
+    mesh.calc_loop_triangles()
+    return len(mesh.loop_triangles)
+
+
+def _estimate_uv_islands(mesh, layer_name: str) -> int:
+    if mesh is None or layer_name not in mesh.uv_layers:
+        return 0
+    try:
+        mesh.calc_loop_triangles()
+        island_count = mesh.uv_layers[layer_name].data.calc_unique_uv_islands()
+        return max(0, int(island_count))
+    except (AttributeError, RuntimeError, TypeError):
+        return max(1, len(mesh.polygons))
+
+
+def _estimate_atlas_fill_percent(mesh, layer_name: str) -> float:
+    if mesh is None or layer_name not in mesh.uv_layers:
+        return 0.0
+
+    uv_layer = mesh.uv_layers[layer_name].data
+    if not uv_layer:
+        return 0.0
+
+    min_u = min(loop.uv.x for loop in uv_layer)
+    min_v = min(loop.uv.y for loop in uv_layer)
+    max_u = max(loop.uv.x for loop in uv_layer)
+    max_v = max(loop.uv.y for loop in uv_layer)
+
+    width = max(0.0, max_u - min_u)
+    height = max(0.0, max_v - min_v)
+    return clamp01(width * height) * 100.0
+
+
+def prepare_lightmap_uv(obj, profile, settings_obj=None) -> bool:
+    """
+    Stage 1 — ensure the lightmap UV layer exists and faces are ready to pack.
+
+    Returns True when an existing lightmap UV was preserved (later stages skipped).
+    """
+    settings_obj = settings_obj or obj
+    if should_preserve_existing_lightmap_uv(settings_obj):
+        preserve_existing_lightmap_uv(obj)
+        return True
+
+    mesh = obj.data
+    if len(mesh.uv_layers) == 0:
+        mesh.uv_layers.new(name="UVMap")
+
+    ensure_object_mode()
+    select_single_object(obj)
+
+    if LIGHTMAP_UV_NAME in mesh.uv_layers:
+        mesh.uv_layers.remove(mesh.uv_layers[LIGHTMAP_UV_NAME])
+
+    mesh.uv_layers.new(name=LIGHTMAP_UV_NAME)
+    move_uv_layer_to_index(mesh, LIGHTMAP_UV_NAME, LIGHTMAP_UV_INDEX)
+
+    lightmap_layer = mesh.uv_layers[LIGHTMAP_UV_NAME]
+    mesh.uv_layers.active = lightmap_layer
+    lightmap_layer.active_render = True
+
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    log_info(f"Prepared lightmap UV layer on {obj.name}")
+    return False
+
+
+def normalize_texel_density(obj, profile) -> None:
+    """Stage 2 — apply object scale so UV islands share consistent texel density."""
+    ensure_object_mode()
+    select_single_object(obj)
+    apply_object_scale_for_uv(obj)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    log_info(f"Normalized texel density (applied scale) on {obj.name}")
+
+
+def apply_edge_inset(obj, profile) -> float:
+    """Stage 3 — resolve edge inset from the profile (applied after packing)."""
+    inset = uv_margin_normalized(
+        LIGHTMAP_RESOLUTION,
+        profile.uv_edge_inset,
+        profile.uv_margin_minimum,
+    )
+    log_info(
+        f"Edge inset configured for {obj.name}: "
+        f"{profile.uv_edge_inset}px ({inset:.4f} UV)"
+    )
+    return inset
+
+
+def pack_uv_islands(obj, profile) -> None:
+    """Stage 4 — pack islands using Blender's lightmap pack operator and profile margins."""
+    pack_margin = uv_margin_normalized(
+        LIGHTMAP_RESOLUTION,
+        profile.bake_margin,
+        profile.uv_margin_minimum,
+    )
+
+    if bpy.context.mode != "EDIT":
+        ensure_object_mode()
+        select_single_object(obj)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+
+    bpy.ops.uv.lightmap_pack(
+        PREF_CONTEXT="ALL_FACES",
+        PREF_PACK_IN_ONE=True,
+        PREF_NEW_UVLAYER=False,
+        PREF_BOX_DIV=int(profile.pack_box_division),
+        PREF_MARGIN_DIV=pack_margin,
+    )
+    ensure_object_mode()
+    log_info(
+        f"Packed UV islands on {obj.name} "
+        f"(margin={pack_margin:.4f}, box_div={profile.pack_box_division})"
+    )
+
+
+def finalize_uv_normalization(obj, profile, edge_inset_uv: float) -> None:
+    mesh = obj.data
+    normalize_uv_to_unit_square(mesh, edge_inset_uv=edge_inset_uv)
+    mesh.update()
+    activate_lightmap_uv(obj)
+    log_info(
+        f"Finalized UV normalization on {obj.name} "
+        f"(index {LIGHTMAP_UV_INDEX}, inset={edge_inset_uv:.4f})"
+    )
+
+
+def run_uv_pipeline(obj, profile, settings_obj=None) -> None:
+    """Run the full UV preparation pipeline for one object/proxy."""
+    preserved = prepare_lightmap_uv(obj, profile, settings_obj=settings_obj)
+    if preserved:
+        return
+
+    normalize_texel_density(obj, profile)
+    edge_inset = apply_edge_inset(obj, profile)
+    pack_uv_islands(obj, profile)
+    finalize_uv_normalization(obj, profile, edge_inset)
+
+
+def validate_uv_pack_object(obj) -> tuple[bool, list[str]]:
+    """Stage 5 — validate packed lightmap UVs for a single mesh."""
+    issues: list[str] = []
+    mesh = getattr(obj, "data", None)
+    if mesh is None:
+        return False, ["mesh data missing"]
+
+    layer_name = resolve_lightmap_uv_layer_name(mesh)
+    if layer_name is None:
+        return False, ["missing lightmap UV layer"]
+
+    uv_layer = mesh.uv_layers[layer_name].data
+    if not uv_layer:
+        return False, [f"UV layer '{layer_name}' has no loop data"]
+
+    min_u = min(loop.uv.x for loop in uv_layer)
+    min_v = min(loop.uv.y for loop in uv_layer)
+    max_u = max(loop.uv.x for loop in uv_layer)
+    max_v = max(loop.uv.y for loop in uv_layer)
+
+    width = max_u - min_u
+    height = max_v - min_v
+    if width <= UV_VALIDATE_EPSILON or height <= UV_VALIDATE_EPSILON:
+        issues.append("zero-area UV bounds")
+
+    tol = UV_OUT_OF_BOUNDS_TOLERANCE
+    if min_u < -tol or min_v < -tol or max_u > 1.0 + tol or max_v > 1.0 + tol:
+        issues.append("UV coordinates outside 0-1 range")
+
+    mesh.calc_loop_triangles()
+    zero_area_faces = 0
+    for tri in mesh.loop_triangles:
+        loops = [uv_layer[loop_index].uv for loop_index in tri.loops]
+        if len(loops) < 3:
+            continue
+        area = abs(
+            (loops[1].x - loops[0].x) * (loops[2].y - loops[0].y)
+            - (loops[2].x - loops[0].x) * (loops[1].y - loops[0].y)
+        ) * 0.5
+        if area <= UV_VALIDATE_EPSILON:
+            zero_area_faces += 1
+
+    if zero_area_faces:
+        issues.append(f"{zero_area_faces} zero-area UV triangle(s)")
+
+    return len(issues) == 0, issues
+
+
+def validate_uv_pack(objects) -> tuple[bool, list[str]]:
+    """Validate UV packing for all *objects*; returns (ok, combined issue messages)."""
+    all_ok = True
+    messages: list[str] = []
+
+    for obj in objects:
+        ok, issues = validate_uv_pack_object(obj)
+        if ok:
+            continue
+        all_ok = False
+        for issue in issues:
+            message = f"{obj.name}: {issue}"
+            messages.append(message)
+            log_error(message)
+
+    return all_ok, messages
+
+
+def update_profile_geometry_stats(stats: ProfileBakeStats, objects) -> None:
+    triangles = 0
+    islands = 0
+    fill_total = 0.0
+
+    for obj in objects:
+        mesh = getattr(obj, "data", None)
+        if mesh is None:
+            continue
+        triangles += _mesh_triangle_count(mesh)
+        layer_name = resolve_lightmap_uv_layer_name(mesh) or LIGHTMAP_UV_NAME
+        islands += _estimate_uv_islands(mesh, layer_name)
+        fill_total += _estimate_atlas_fill_percent(mesh, layer_name)
+
+    stats.triangles = triangles
+    stats.uv_islands = islands
+    if objects:
+        stats.atlas_fill_percent = fill_total / float(len(objects))
+        stats.pack_efficiency = clamp01(stats.atlas_fill_percent / 100.0) * 100.0
 
 
 def normalize_uv_to_unit_square(mesh, edge_inset_uv: float = 0.0) -> None:
@@ -1411,55 +1802,9 @@ def activate_primary_render_uv(obj) -> None:
     mesh.update()
 
 
-def recreate_lightmap_uv(obj, settings_obj=None) -> None:
-    """Lightmap UV: lightmap_pack + normalize (same as AutoLightmapv4.py)."""
-    settings_obj = settings_obj or obj
-    if should_preserve_existing_lightmap_uv(settings_obj):
-        preserve_existing_lightmap_uv(obj)
-        return
-
-    mesh = obj.data
-    if len(mesh.uv_layers) == 0:
-        mesh.uv_layers.new(name="UVMap")
-
-    ensure_object_mode()
-    select_single_object(obj)
-    apply_object_scale_for_uv(obj)
-
-    if LIGHTMAP_UV_NAME in mesh.uv_layers:
-        mesh.uv_layers.remove(mesh.uv_layers[LIGHTMAP_UV_NAME])
-
-    mesh.uv_layers.new(name=LIGHTMAP_UV_NAME)
-    move_uv_layer_to_index(mesh, LIGHTMAP_UV_NAME, LIGHTMAP_UV_INDEX)
-
-    lightmap_layer = mesh.uv_layers[LIGHTMAP_UV_NAME]
-    mesh.uv_layers.active = lightmap_layer
-    lightmap_layer.active_render = True
-
-    bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.mesh.select_all(action="SELECT")
-
-    pack_margin = uv_margin_normalized(LIGHTMAP_RESOLUTION, LIGHTMAP_BAKE_MARGIN_PX)
-    edge_inset = uv_margin_normalized(LIGHTMAP_RESOLUTION, LIGHTMAP_UV_EDGE_INSET_PX)
-
-    try:
-        bpy.ops.uv.lightmap_pack(
-            PREF_CONTEXT="ALL_FACES",
-            PREF_PACK_IN_ONE=True,
-            PREF_NEW_UVLAYER=False,
-            PREF_BOX_DIV=LIGHTMAP_PACK_BOX_DIV,
-            PREF_MARGIN_DIV=pack_margin,
-        )
-    finally:
-        ensure_object_mode()
-
-    normalize_uv_to_unit_square(mesh, edge_inset_uv=edge_inset)
-    mesh.update()
-    activate_lightmap_uv(obj)
-    log_info(
-        f"UV {LIGHTMAP_UV_NAME}: lightmap_pack + normalized "
-        f"(index {LIGHTMAP_UV_INDEX}, margin={pack_margin:.4f})"
-    )
+def recreate_lightmap_uv(obj, profile, settings_obj=None) -> None:
+    """Run the modular UV pipeline (profile-driven replacement for legacy helper)."""
+    run_uv_pipeline(obj, profile, settings_obj=settings_obj)
 
 
 def transfer_lightmap_uv_to_original(original_obj, proxy_obj) -> None:
@@ -1528,17 +1873,20 @@ def object_world_bounds(obj):
     return {"min": mins, "max": maxs}
 
 
-def build_manifest_entry(obj, png_path: str, ao_path: str | None = None):
+def build_manifest_entry(obj, png_path: str, profile, ao_path: str | None = None):
     entry = {
         "objectName": obj.name,
         "meshName": obj.data.name if obj.data else obj.name,
         "objectStem": sanitize_filename(obj.name),
         "lightmap": os.path.basename(png_path),
         "lightmapPath": json_path(png_path),
+        "profileName": profile.name,
+        "profileUuid": profile.uuid,
         "uvSet": LIGHTMAP_UV_NAME,
         "uvIndex": LIGHTMAP_UV_INDEX,
         "lightmapUvChannel": LIGHTMAP_UV_CHANNEL,
         "resolution": LIGHTMAP_RESOLUTION,
+        "bakeSettings": profile_bake_settings(profile),
         "bounds": object_world_bounds(obj),
     }
     if ao_path:
@@ -1547,7 +1895,7 @@ def build_manifest_entry(obj, png_path: str, ao_path: str | None = None):
     return entry
 
 
-def write_manifest(output_dir: str, lightmap_entries) -> str:
+def write_manifest(output_dir: str, lightmap_entries, profile_settings=None) -> str:
     manifest_path = os.path.join(output_dir, MANIFEST_FILENAME)
 
     mesh_compat = []
@@ -1562,7 +1910,7 @@ def write_manifest(output_dir: str, lightmap_entries) -> str:
         )
 
     manifest = {
-        "version": 4,
+        "version": 5,
         "generator": GENERATOR_NAME,
         "created": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "scene": blend_scene_name(),
@@ -1572,7 +1920,7 @@ def write_manifest(output_dir: str, lightmap_entries) -> str:
         "lightmapUvChannel": LIGHTMAP_UV_CHANNEL,
         "textureFormat": "png",
         "colorSpace": "Non-Color",
-        "bakeSettings": dict(BAKE_SETTINGS),
+        "bakeSettings": profile_settings or {},
         "lightmaps": lightmap_entries,
         "meshes": mesh_compat,
         "meshesByName": {entry["objectName"]: entry for entry in lightmap_entries},
@@ -1591,12 +1939,21 @@ def write_manifest(output_dir: str, lightmap_entries) -> str:
 # --------------------------------------------------
 
 
-def bake_mesh_lightmap(original_obj, output_dir: str):
-    """Proxy bake workflow for one selected mesh."""
+def bake_mesh_lightmap(
+    original_obj,
+    output_dir: str,
+    profile,
+    proxy=None,
+    skip_uv: bool = False,
+):
+    """Proxy bake workflow for one mesh using *profile* settings."""
     log_info(f"Starting bake for: {original_obj.name}")
     started = time.perf_counter()
 
-    proxy = None
+    owns_proxy = proxy is None
+    if owns_proxy:
+        proxy = create_proxy(original_obj)
+
     bake_material = None
     neutral_contributor_material = None
     visibility_state = None
@@ -1606,11 +1963,11 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
     original_uv_snapshot = snapshot_lightmap_uv_state(original_obj) if preserve_uv else None
 
     try:
-        proxy = create_proxy(original_obj)
-        if preserve_uv:
-            preserve_existing_lightmap_uv(proxy)
-        else:
-            recreate_lightmap_uv(proxy, settings_obj=original_obj)
+        if not skip_uv:
+            if preserve_uv:
+                preserve_existing_lightmap_uv(proxy)
+            else:
+                run_uv_pipeline(proxy, profile, settings_obj=original_obj)
 
         image = get_or_create_lightmap_image(original_obj.name)
         log_info(f"Image created: {image.name}")
@@ -1623,8 +1980,6 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
         if not preserve_uv:
             activate_lightmap_uv(proxy)
 
-        # Original and proxy share the same transform — hide original so Cycles
-        # hits the proxy surface instead of the coplanar source mesh (black bake).
         visibility_state = hide_original_for_proxy_bake(original_obj)
 
         override_targets = []
@@ -1659,7 +2014,12 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
 
         set_active_bake_image(bake_material, image)
         ao_path = bake_and_apply_ao(
-            proxy, bake_material, image, original_obj, output_dir
+            proxy,
+            bake_material,
+            image,
+            original_obj,
+            output_dir,
+            profile,
         )
 
         png_path = os.path.join(output_dir, lightmap_png_filename(original_obj.name))
@@ -1672,7 +2032,7 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
                 f"Verified original lightmap UV unchanged "
                 f"({PROP_OVERWRITE_LIGHTMAP}=False): {original_obj.name}"
             )
-        entry = build_manifest_entry(original_obj, png_path, ao_path)
+        entry = build_manifest_entry(original_obj, png_path, profile, ao_path)
 
         elapsed = time.perf_counter() - started
         log_info(f"Finished bake for: {original_obj.name} ({elapsed:.1f}s)")
@@ -1685,105 +2045,238 @@ def bake_mesh_lightmap(original_obj, output_dir: str):
         if visibility_state is not None:
             restore_visibility(original_obj, visibility_state)
             log_info(f"Restored original visibility: {original_obj.name}")
-        delete_proxy(proxy)
+        if owns_proxy:
+            delete_proxy(proxy)
         remove_temporary_material(bake_material)
         remove_temporary_material(neutral_contributor_material)
         ensure_object_mode()
         flush_view_layer()
 
 
-def main():
-    log_info(f"{GENERATOR_NAME} — direct+indirect diffuse lightmap bake (proxy workflow)")
-    output_dir = ensure_output_dir(OUTPUT_DIR)
-    log_info(f"Output directory: {json_path(output_dir)}")
-
-    scene = bpy.context.scene
-    render_state = capture_render_state(scene)
-    world_ao_state = capture_world_ao_state(scene)
-    selection_state = capture_selection_context()
-    view_layer = bpy.context.view_layer
-
-    selected_meshes = get_selected_mesh_objects()
-    if not selected_meshes:
-        log_error("No mesh objects selected — select one or more meshes to bake.")
-        return
-
-    candidates = []
-    skipped = []
-    hidden_mesh_render_overrides = []
-
-    for obj in selected_meshes:
-        ok, reason = is_bake_candidate(obj, view_layer)
-        if ok:
-            candidates.append(obj)
+def prepare_profile_proxies(objects, profile) -> dict:
+    """Create proxies and run the UV pipeline for each object in *objects*."""
+    proxy_map = {}
+    for obj in objects:
+        proxy = create_proxy(obj)
+        if should_preserve_existing_lightmap_uv(obj):
+            preserve_existing_lightmap_uv(proxy)
         else:
-            skipped.append((obj.name, reason))
-            log_warn(f"Skipping selected {obj.name}: {reason}")
+            run_uv_pipeline(proxy, profile, settings_obj=obj)
+        proxy_map[obj] = proxy
+    return proxy_map
 
-    if not candidates:
-        log_error("No valid selected mesh objects to bake.")
-        return
 
-    log_info(f"Processing {len(candidates)} mesh object(s)")
+def perform_bake(
+    profile,
+    objects,
+    output_dir: str,
+    proxy_map=None,
+) -> tuple[list, list[tuple[str, str]]]:
+    """Bake all *objects* for *profile*.
 
-    manifest_entries = []
+    When *proxy_map* is supplied, UV preparation is skipped and proxies are not removed.
+    """
+    owns_proxies = proxy_map is None
+    if proxy_map is None:
+        proxy_map = prepare_profile_proxies(objects, profile)
+
+    entries = []
     errors = []
 
     try:
-        scene.render.engine = "CYCLES"
-        hidden_mesh_render_overrides = suppress_hidden_meshes_from_render(
-            scene, view_layer
-        )
-        device_info = setup_cycles_bake_device(scene)
-        if device_info["device"] != "GPU":
-            log_error("GPU-only baking required but no compatible GPU was found. Aborting.")
-            return
-
-        setup_bake_pass(scene)
-
-        for index, obj in enumerate(candidates, start=1):
-            log_info(f"Baking object {index}/{len(candidates)}: {obj.name}")
+        for index, obj in enumerate(objects, start=1):
+            log_info(f"Baking object {index}/{len(objects)}: {obj.name}")
             try:
-                entry = bake_mesh_lightmap(obj, output_dir)
-                manifest_entries.append(entry)
+                entry = bake_mesh_lightmap(
+                    obj,
+                    output_dir,
+                    profile,
+                    proxy=proxy_map[obj],
+                    skip_uv=True,
+                )
+                entries.append(entry)
             except Exception as exc:
                 errors.append((obj.name, str(exc)))
                 log_error(f"Failed bake for {obj.name}: {exc}")
                 traceback.print_exc()
                 ensure_object_mode()
                 flush_view_layer()
+    finally:
+        if owns_proxies:
+            for proxy in proxy_map.values():
+                delete_proxy(proxy)
+
+    return entries, errors
+
+
+def save_outputs(_profile, manifest_entries, output_dir: str) -> str | None:
+    """Write manifest for completed bakes (shared output folder)."""
+    if not manifest_entries:
+        log_warn("No lightmaps baked — manifest not written")
+        return None
+    return write_manifest(output_dir, manifest_entries)
+
+
+def cleanup_profile_run(proxies) -> None:
+    """Remove any leftover temporary proxies."""
+    for proxy in proxies or []:
+        delete_proxy(proxy)
+
+
+def process_bake_profile(
+    profile,
+    scene,
+    view_layer,
+    output_dir: str,
+) -> tuple[list, ProfileBakeStats]:
+    stats = ProfileBakeStats(profile_name=profile.name)
+    started = time.perf_counter()
+
+    log_section(f"Bake Profile: {profile.name}")
+    objects = collect_profile_objects(profile, scene, view_layer)
+    stats.objects_processed = len(objects)
+    log_info(f"Objects: {len(objects)}")
+
+    if not objects:
+        log_warn(f"Profile '{profile.name}' has no assigned objects — skipping")
+        return [], stats
+
+    valid_objects, skipped = validate_objects(objects, view_layer)
+    stats.objects_skipped = len(skipped)
+
+    if not valid_objects:
+        log_warn(f"Profile '{profile.name}' has no valid objects to bake — skipping")
+        return [], stats
+
+    update_profile_geometry_stats(stats, valid_objects)
+
+    log_info("Preparing UVs...")
+    proxy_map = {}
+    try:
+        proxy_map = prepare_profile_proxies(valid_objects, profile)
+
+        log_info("Validating...")
+        uv_ok, uv_issues = validate_uv_pack(list(proxy_map.values()))
+        if not uv_ok:
+            stats.issues.extend(uv_issues)
+            log_error(
+                f"UV validation failed for profile '{profile.name}' — skipping bake"
+            )
+            return [], stats
+
+        update_profile_geometry_stats(stats, valid_objects)
+
+        log_info("Bake Started...")
+        device_info = configure_cycles(profile, scene)
+        if device_info["device"] != "GPU":
+            log_error(
+                f"GPU-only baking required for profile '{profile.name}' "
+                "but no compatible GPU was found — skipping"
+            )
+            return [], stats
+
+        entries, errors = perform_bake(
+            profile,
+            valid_objects,
+            output_dir,
+            proxy_map=proxy_map,
+        )
+        stats.objects_baked = len(entries)
+        stats.objects_failed = len(errors)
+        stats.bake_seconds = time.perf_counter() - started
+
+        log_info("Bake Finished")
+        log_info(f"Time: {format_duration(stats.bake_seconds)}")
+        log_info(f"Objects Processed: {stats.objects_processed}")
+        log_info(f"Triangles: {stats.triangles:,}")
+        log_info(f"UV Islands: {stats.uv_islands}")
+        log_info(f"Atlas Fill %: {stats.atlas_fill_percent:.1f}")
+        log_info(f"Pack Efficiency: {stats.pack_efficiency:.1f}")
+
+        return entries, stats
+    finally:
+        cleanup_profile_run(list(proxy_map.values()))
+
+
+def main():
+    log_info(f"{GENERATOR_NAME} — profile-driven lightmap bake (proxy workflow)")
+    output_dir = ensure_output_dir(OUTPUT_DIR)
+    log_info(f"Output directory: {json_path(output_dir)}")
+
+    scene = bpy.context.scene
+    if not addon_profiles_available(scene):
+        log_error(
+            "Lightmap Baker add-on is required. Enable it and create bake profiles."
+        )
+        return
+
+    profiles = get_enabled_profiles(scene)
+    if not profiles:
+        log_error("No enabled bake profiles found in the scene.")
+        return
+
+    render_state = capture_render_state(scene)
+    world_ao_state = capture_world_ao_state(scene)
+    selection_state = capture_selection_context()
+    view_layer = bpy.context.view_layer
+
+    log_unassigned_selected_meshes(scene, view_layer)
+
+    manifest_entries = []
+    profile_stats: list[ProfileBakeStats] = []
+    hidden_mesh_render_overrides = []
+    pipeline_started = time.perf_counter()
+
+    try:
+        scene.render.engine = "CYCLES"
+        hidden_mesh_render_overrides = suppress_hidden_meshes_from_render(
+            scene, view_layer
+        )
+
+        for profile in profiles:
+            entries, stats = process_bake_profile(
+                profile,
+                scene,
+                view_layer,
+                output_dir,
+            )
+            manifest_entries.extend(entries)
+            profile_stats.append(stats)
 
         if manifest_entries:
-            write_manifest(output_dir, manifest_entries)
+            save_outputs(None, manifest_entries, output_dir)
         else:
             log_warn("No lightmaps baked — manifest not written")
 
     finally:
+        baked_objects = []
+        for profile in profiles:
+            baked_objects.extend(collect_profile_objects(profile, scene, view_layer))
         restore_hidden_mesh_render_overrides(hidden_mesh_render_overrides)
-        restore_primary_render_uv_for_meshes(candidates)
+        restore_primary_render_uv_for_meshes(baked_objects)
         restore_world_ao_state(scene, world_ao_state)
         restore_render_state(scene, render_state)
         restore_selection_context(selection_state)
         log_info(f"Restored render engine: {scene.render.engine}")
 
-    log_info("--- Bake summary ---")
-    log_info(f"Selected mesh objects: {len(selected_meshes)}")
-    log_info(f"Baked successfully: {len(manifest_entries)}")
-    log_info(f"Skipped: {len(skipped)}")
-    log_info(f"Failed: {len(errors)}")
+    log_section("Bake Summary")
+    log_info(f"Profiles processed: {len(profiles)}")
+    log_info(f"Total baked: {len(manifest_entries)}")
+    log_info(f"Total time: {format_duration(time.perf_counter() - pipeline_started)}")
 
-    if skipped:
-        for name, reason in skipped:
-            log_info(f"  skipped: {name} ({reason})")
-
-    if errors:
-        for name, message in errors:
-            log_info(f"  failed: {name} ({message})")
+    for stats in profile_stats:
+        log_info(
+            f"  {stats.profile_name}: baked={stats.objects_baked}, "
+            f"skipped={stats.objects_skipped}, failed={stats.objects_failed}, "
+            f"time={format_duration(stats.bake_seconds)}"
+        )
+        for issue in stats.issues:
+            log_info(f"    issue: {issue}")
 
     if manifest_entries:
         log_info("Output images:")
         for entry in manifest_entries:
-            line = f"  {entry['lightmap']}"
+            line = f"  {entry['lightmap']} ({entry.get('profileName', 'unknown')})"
             if entry.get("ao"):
                 line += f" (+ AO: {entry['ao']})"
             log_info(line)
