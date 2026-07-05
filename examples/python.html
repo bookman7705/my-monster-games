@@ -30,7 +30,7 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 try:
-    from lightmap_baker.utils import iter_objects_with_profile
+    from lightmap_baker.utils import find_profile_by_uuid, iter_objects_with_profile
 except ImportError as exc:
     raise ImportError(
         "Lightmap Baker add-on module not found. Enable the add-on and ensure "
@@ -41,12 +41,9 @@ except ImportError as exc:
 # CONFIG (non-profile constants)
 # --------------------------------------------------
 
-OUTPUT_DIR = r"C:\Users\Afrom\Documents\Blender\lightmaps"
-
-LIGHTMAP_RESOLUTION = 1024
-LIGHTMAP_UV_NAME = "LightMap"
-LIGHTMAP_UV_INDEX = 1
-LIGHTMAP_UV_CHANNEL = 1
+# Fallback UV channel defaults when profile fields are unavailable (old scenes).
+_DEFAULT_UV_CHANNEL_NAME = "LightMap"
+_DEFAULT_UV_CHANNEL_INDEX = 1
 
 MANIFEST_FILENAME = "lightmap_manifest.json"
 GENERATOR_NAME = "AutoLightmapv5.py"
@@ -104,6 +101,26 @@ def format_duration(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def clear_console() -> None:
+    """Clear the Blender system console when possible; otherwise print blank lines."""
+    try:
+        screen = bpy.context.screen
+        if screen is not None:
+            for area in screen.areas:
+                if area.type != "CONSOLE":
+                    continue
+                for region in area.regions:
+                    if region.type != "WINDOW":
+                        continue
+                    with bpy.context.temp_override(window=bpy.context.window, screen=screen, area=area, region=region):
+                        bpy.ops.console.clear()
+                    return
+    except (AttributeError, RuntimeError, TypeError):
+        pass
+
+    print("\n" * 80)
+
+
 # --------------------------------------------------
 # BAKE PROFILE INTEGRATION
 # --------------------------------------------------
@@ -124,12 +141,49 @@ class ProfileBakeStats:
     issues: list[str] = field(default_factory=list)
 
 
+@dataclass
+class UVSnapshot:
+    """Captured UV state from the final packed proxy mesh."""
+
+    island_count: int
+    uv_bounds: tuple[float, float, float, float]
+    uv_area_estimate: float
+    valid: bool
+    active_layer_name: str = ""
+    source_object_name: str = ""
+
+
+@dataclass
+class ProfileBakeContext:
+    """Per-profile bake run state shared across pipeline stages."""
+
+    profile_name: str
+    uv_snapshots: dict[str, UVSnapshot] = field(default_factory=dict)
+
+    # TODO: UVIsland data model for multi-island optimization / custom packer integration.
+
+
+def atlas_fill_percent_from_snapshot(snapshot: UVSnapshot) -> float:
+    """Derive atlas fill % from snapshot data only (not live mesh reads)."""
+    if not snapshot.valid:
+        return 0.0
+    if snapshot.uv_area_estimate > UV_VALIDATE_EPSILON:
+        return clamp01(snapshot.uv_area_estimate) * 100.0
+
+    min_u, min_v, max_u, max_v = snapshot.uv_bounds
+    bounds_area = max(0.0, max_u - min_u) * max(0.0, max_v - min_v)
+    if bounds_area > UV_VALIDATE_EPSILON:
+        return clamp01(bounds_area) * 100.0
+    return 0.0
+
+
 def addon_profiles_available(scene) -> bool:
     return hasattr(scene, "lightmap_bake_profiles")
 
 
 def profile_bake_settings(profile) -> dict[str, Any]:
     """Snapshot profile bake settings as a plain dict for manifest/logging."""
+    res_x, res_y = profile_atlas_resolution(profile)
     return {
         "noise_threshold": float(profile.noise_threshold),
         "max_samples": int(profile.max_samples),
@@ -148,7 +202,148 @@ def profile_bake_settings(profile) -> dict[str, Any]:
         "uv_margin_minimum": float(profile.uv_margin_minimum),
         "uv_edge_inset": int(profile.uv_edge_inset),
         "pack_box_division": int(profile.pack_box_division),
+        "atlas_resolution_x": res_x,
+        "atlas_resolution_y": res_y,
+        "atlas_auto_mode": profile_atlas_auto_mode(profile),
+        "allow_multiple_atlases": profile_allow_multiple_atlases(profile),
+        "atlas_fill_target": float(getattr(profile, "atlas_fill_target", 0.9)),
+        "output_directory": profile_output_directory(profile),
+        "file_naming_prefix": profile_file_naming_prefix(profile),
+        "file_naming_suffix": profile_file_naming_suffix(profile),
+        "texel_density_target": profile_texel_density_target(profile),
+        "texel_density_mode": profile_texel_density_mode(profile),
+        "packing_strategy": profile_packing_strategy(profile),
+        "allow_island_rotation": profile_allow_island_rotation(profile),
+        "scale_islands_before_pack": profile_scale_islands_before_pack(profile),
+        "uv_channel_name": profile_uv_channel_name(profile),
+        "uv_channel_index": profile_uv_channel_index(profile),
+        "uv_mode": profile_uv_mode(profile),
     }
+
+
+# --------------------------------------------------
+# PROFILE FIELD ACCESSORS (backward-compatible fallbacks)
+# --------------------------------------------------
+
+_VALID_UV_MODES = frozenset({"CREATE", "OVERWRITE", "PRESERVE"})
+_VALID_PACKING_STRATEGIES = frozenset({"BLENDER", "DENSE", "BALANCED", "CONSERVATIVE"})
+_VALID_TEXEL_MODES = frozenset({"OFF", "SOFT", "STRICT"})
+
+
+def profile_atlas_resolution(profile) -> tuple[int, int]:
+    res_x = int(getattr(profile, "atlas_resolution_x", 2048))
+    res_y = int(getattr(profile, "atlas_resolution_y", 2048))
+    return max(64, res_x), max(64, res_y)
+
+
+def profile_atlas_auto_mode(profile) -> str:
+    mode = getattr(profile, "atlas_auto_mode", "FIXED")
+    return mode if mode in ("FIXED", "AUTO", "DENSITY") else "FIXED"
+
+
+def profile_allow_multiple_atlases(profile) -> bool:
+    return bool(getattr(profile, "allow_multiple_atlases", False))
+
+
+def profile_output_directory(profile) -> str:
+    path = getattr(profile, "output_directory", "//lightmaps/")
+    return path if path else "//lightmaps/"
+
+
+def profile_file_naming_prefix(profile) -> str:
+    return getattr(profile, "file_naming_prefix", "") or ""
+
+
+def profile_file_naming_suffix(profile) -> str:
+    return getattr(profile, "file_naming_suffix", "") or ""
+
+
+def profile_texel_density_target(profile) -> float:
+    return max(0.0, float(getattr(profile, "texel_density_target", 10.0)))
+
+
+def profile_texel_density_mode(profile) -> str:
+    mode = getattr(profile, "texel_density_mode", "SOFT")
+    return mode if mode in _VALID_TEXEL_MODES else "SOFT"
+
+
+def profile_packing_strategy(profile) -> str:
+    strategy = getattr(profile, "packing_strategy", "BALANCED")
+    return strategy if strategy in _VALID_PACKING_STRATEGIES else "BALANCED"
+
+
+def profile_allow_island_rotation(profile) -> bool:
+    return bool(getattr(profile, "allow_island_rotation", True))
+
+
+def profile_scale_islands_before_pack(profile) -> bool:
+    return bool(getattr(profile, "scale_islands_before_pack", True))
+
+
+def profile_uv_channel_name(profile) -> str:
+    name = getattr(profile, "uv_channel_name", _DEFAULT_UV_CHANNEL_NAME)
+    return name if name else _DEFAULT_UV_CHANNEL_NAME
+
+
+def profile_uv_channel_index(profile) -> int:
+    return max(0, min(8, int(getattr(profile, "uv_channel_index", _DEFAULT_UV_CHANNEL_INDEX))))
+
+
+def profile_uv_mode(profile) -> str:
+    mode = getattr(profile, "uv_mode", "CREATE")
+    return mode if mode in _VALID_UV_MODES else "CREATE"
+
+
+def profile_object_output_stem(profile, object_name: str) -> str:
+    return (
+        f"{profile_file_naming_prefix(profile)}"
+        f"{sanitize_filename(object_name)}"
+        f"{profile_file_naming_suffix(profile)}"
+    )
+
+
+def ensure_profile_output_dir(profile) -> str | None:
+    """Resolve and create the profile output directory; None when invalid."""
+    try:
+        abs_path = bpy.path.abspath(profile_output_directory(profile))
+        if not abs_path:
+            return None
+        return ensure_output_dir(abs_path)
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def validate_profile_settings(profile) -> tuple[bool, list[str]]:
+    """Validate profile system settings before baking."""
+    issues: list[str] = []
+    res_x, res_y = profile_atlas_resolution(profile)
+    if res_x <= 0 or res_y <= 0:
+        issues.append(f"invalid resolution {res_x}x{res_y}")
+
+    output_dir = ensure_profile_output_dir(profile)
+    if output_dir is None:
+        issues.append(f"invalid or unavailable output directory: {profile_output_directory(profile)}")
+
+    uv_mode = profile_uv_mode(profile)
+    if uv_mode not in _VALID_UV_MODES:
+        issues.append(f"invalid UV mode: {uv_mode}")
+
+    if profile_texel_density_target(profile) < 0:
+        issues.append(
+            f"invalid texel density: {profile_texel_density_target(profile)}"
+        )
+
+    return len(issues) == 0, issues
+
+
+def log_profile_settings(profile) -> None:
+    res_x, res_y = profile_atlas_resolution(profile)
+    log_info("[PROFILE SETTINGS]")
+    log_info(f"Resolution: {res_x}x{res_y}")
+    log_info(f"Output: {profile_output_directory(profile)}")
+    log_info(f"Texel Density: {profile_texel_density_target(profile)}")
+    log_info(f"Packing: {profile_packing_strategy(profile)}")
+    log_info(f"UV Mode: {profile_uv_mode(profile)}")
 
 
 def get_enabled_profiles(scene) -> list:
@@ -272,20 +467,54 @@ def blend_scene_name() -> str:
     return bpy.path.clean_name(bpy.context.scene.name) or "Untitled"
 
 
-def lightmap_image_name(object_name: str) -> str:
+def lightmap_image_name(object_name: str, profile=None) -> str:
+    if profile is not None:
+        return f"{profile_object_output_stem(profile, object_name)}_LightMap"
     return f"{sanitize_filename(object_name)}_LightMap"
 
 
-def lightmap_png_filename(object_name: str) -> str:
-    return f"{lightmap_image_name(object_name)}.png"
+def lightmap_png_filename(object_name: str, profile=None) -> str:
+    return f"{lightmap_image_name(object_name, profile)}.png"
 
 
-def ao_image_name(object_name: str) -> str:
+def ao_image_name(object_name: str, profile=None) -> str:
+    if profile is not None:
+        return f"{profile_object_output_stem(profile, object_name)}_AO"
     return f"{sanitize_filename(object_name)}_AO"
 
 
-def ao_png_filename(object_name: str) -> str:
-    return f"{ao_image_name(object_name)}.png"
+def ao_png_filename(object_name: str, profile=None) -> str:
+    return f"{ao_image_name(object_name, profile)}.png"
+
+
+def profile_atlas_stem(profile) -> str:
+    return sanitize_filename(profile.name)
+
+
+def profile_lightmap_image_name(profile) -> str:
+    stem = (
+        f"{profile_file_naming_prefix(profile)}"
+        f"{profile_atlas_stem(profile)}"
+        f"{profile_file_naming_suffix(profile)}"
+    )
+    return f"{stem}_LightMap"
+
+
+def profile_lightmap_png_filename(profile) -> str:
+    return f"{profile_lightmap_image_name(profile)}.png"
+
+
+def profile_ao_image_name(profile) -> str:
+    stem = (
+        f"{profile_file_naming_prefix(profile)}"
+        f"{profile_atlas_stem(profile)}"
+        f"{profile_file_naming_suffix(profile)}"
+    )
+    return f"{stem}_AO"
+
+
+def profile_ao_png_filename(profile) -> str:
+    return f"{profile_ao_image_name(profile)}.png"
 
 
 def proxy_object_name(object_name: str) -> str:
@@ -398,6 +627,22 @@ def select_single_object(obj) -> None:
         scene_obj.select_set(False)
     obj.select_set(True)
     view_layer.objects.active = obj
+
+
+def select_mesh_objects(objects) -> None:
+    """Select *objects* and set the first as active."""
+    ensure_object_mode()
+    view_layer = bpy.context.view_layer
+    for scene_obj in view_layer.objects:
+        scene_obj.select_set(False)
+
+    valid = [obj for obj in objects if obj is not None and obj.name in view_layer.objects]
+    if not valid:
+        return
+
+    for obj in valid:
+        obj.select_set(True)
+    view_layer.objects.active = valid[0]
 
 
 def flush_view_layer() -> None:
@@ -1085,22 +1330,70 @@ def restore_material_overrides(snapshots) -> None:
         flush_view_layer()
 
 
-def get_or_create_lightmap_image(object_name: str):
-    image_name = lightmap_image_name(object_name)
+def get_or_create_lightmap_image(object_name: str, profile=None):
+    image_name = lightmap_image_name(object_name, profile)
+    res_x, res_y = profile_atlas_resolution(profile) if profile else (2048, 2048)
     existing = bpy.data.images.get(image_name)
     if existing is not None:
         bpy.data.images.remove(existing)
 
     image = bpy.data.images.new(
         name=image_name,
-        width=LIGHTMAP_RESOLUTION,
-        height=LIGHTMAP_RESOLUTION,
+        width=res_x,
+        height=res_y,
         alpha=False,
         float_buffer=False,
     )
     image.colorspace_settings.name = "Non-Color"
-    black = [0.0, 0.0, 0.0, 1.0] * (LIGHTMAP_RESOLUTION * LIGHTMAP_RESOLUTION)
+    pixel_count = res_x * res_y
+    black = [0.0, 0.0, 0.0, 1.0] * pixel_count
     image.pixels.foreach_set(black)
+    image.update()
+    return image
+
+
+def get_or_create_profile_lightmap_image(profile):
+    """Shared atlas image for all meshes in a bake profile."""
+    image_name = profile_lightmap_image_name(profile)
+    res_x, res_y = profile_atlas_resolution(profile)
+    existing = bpy.data.images.get(image_name)
+    if existing is not None:
+        bpy.data.images.remove(existing)
+
+    image = bpy.data.images.new(
+        name=image_name,
+        width=res_x,
+        height=res_y,
+        alpha=False,
+        float_buffer=False,
+    )
+    image.colorspace_settings.name = "Non-Color"
+    pixel_count = res_x * res_y
+    black = [0.0, 0.0, 0.0, 1.0] * pixel_count
+    image.pixels.foreach_set(black)
+    image.update()
+    log_info(f"Created shared profile atlas image: {image.name} ({res_x}x{res_y})")
+    return image
+
+
+def get_or_create_profile_ao_temp_image(profile):
+    image_name = f"{profile_ao_image_name(profile)}_TEMP"
+    res_x, res_y = profile_atlas_resolution(profile)
+    existing = bpy.data.images.get(image_name)
+    if existing is not None:
+        bpy.data.images.remove(existing)
+
+    image = bpy.data.images.new(
+        name=image_name,
+        width=res_x,
+        height=res_y,
+        alpha=False,
+        float_buffer=False,
+    )
+    image.colorspace_settings.name = "Non-Color"
+    pixel_count = res_x * res_y
+    white = [1.0, 1.0, 1.0, 1.0] * pixel_count
+    image.pixels.foreach_set(white)
     image.update()
     return image
 
@@ -1112,21 +1405,23 @@ def save_lightmap_image(image, filepath: str) -> None:
     log_info(f"Saved PNG: {json_path(filepath)}")
 
 
-def get_or_create_ao_temp_image(object_name: str):
-    image_name = f"{ao_image_name(object_name)}_TEMP"
+def get_or_create_ao_temp_image(object_name: str, profile=None):
+    image_name = f"{ao_image_name(object_name, profile)}_TEMP"
+    res_x, res_y = profile_atlas_resolution(profile) if profile else (2048, 2048)
     existing = bpy.data.images.get(image_name)
     if existing is not None:
         bpy.data.images.remove(existing)
 
     image = bpy.data.images.new(
         name=image_name,
-        width=LIGHTMAP_RESOLUTION,
-        height=LIGHTMAP_RESOLUTION,
+        width=res_x,
+        height=res_y,
         alpha=False,
         float_buffer=False,
     )
     image.colorspace_settings.name = "Non-Color"
-    white = [1.0, 1.0, 1.0, 1.0] * (LIGHTMAP_RESOLUTION * LIGHTMAP_RESOLUTION)
+    pixel_count = res_x * res_y
+    white = [1.0, 1.0, 1.0, 1.0] * pixel_count
     image.pixels.foreach_set(white)
     image.update()
     return image
@@ -1163,6 +1458,55 @@ def remove_temp_image(image) -> None:
     log_info(f"Removed temp image: {name}")
 
 
+def bake_and_apply_ao_profile(
+    proxies,
+    bake_materials,
+    lightmap_image,
+    profile,
+    output_dir: str,
+) -> str | None:
+    """AO pass for a shared profile atlas (all proxies bake into one AO target)."""
+    settings = profile_bake_settings(profile)
+    if not settings["bake_ao"]:
+        return None
+
+    scene = bpy.context.scene
+    ao_on_diffuse_pass = apply_bake_ambient_occlusion_flags(scene.render.bake)
+    if ao_on_diffuse_pass:
+        log_info("AO pass flag present on diffuse bake — skipping separate AO multiply")
+        return None
+
+    ao_image = get_or_create_profile_ao_temp_image(profile)
+    for proxy in proxies:
+        material = bake_materials.get(proxy)
+        if material is not None:
+            set_active_bake_image(material, ao_image)
+
+    select_mesh_objects(proxies)
+    flush_view_layer()
+
+    setup_ao_bake_pass(scene, profile)
+    apply_cycles_world_ao(scene, profile, True)
+
+    log_info(f"Baking shared profile AO: {profile.name}")
+    ensure_object_mode()
+    bpy.ops.object.bake(type="AO")
+    ao_image.update()
+
+    strength = float(settings["ao_strength"])
+    multiply_ao_into_image(lightmap_image, ao_image, strength)
+
+    ao_path = None
+    if settings["save_ao_map"]:
+        ao_path = os.path.join(output_dir, profile_ao_png_filename(profile))
+        save_lightmap_image(ao_image, ao_path)
+
+    remove_temp_image(ao_image)
+    apply_bake_settings(scene, profile)
+    apply_diffuse_bake_pass_settings(scene)
+    return ao_path
+
+
 def bake_and_apply_ao(
     proxy,
     bake_material,
@@ -1185,7 +1529,7 @@ def bake_and_apply_ao(
         log_info("AO pass flag present on diffuse bake — skipping separate AO multiply")
         return None
 
-    ao_image = get_or_create_ao_temp_image(original_obj.name)
+    ao_image = get_or_create_ao_temp_image(original_obj.name, profile)
     set_active_bake_image(bake_material, ao_image)
     select_single_object(proxy)
     flush_view_layer()
@@ -1203,7 +1547,7 @@ def bake_and_apply_ao(
 
     ao_path = None
     if settings["save_ao_map"]:
-        ao_path = os.path.join(output_dir, ao_png_filename(original_obj.name))
+        ao_path = os.path.join(output_dir, ao_png_filename(original_obj.name, profile))
         save_lightmap_image(ao_image, ao_path)
 
     remove_temp_image(ao_image)
@@ -1320,39 +1664,67 @@ def read_overwrite_lightmap(obj) -> bool:
     return parsed
 
 
-def resolve_lightmap_uv_layer_name(mesh) -> str | None:
-    """
-    Return the existing lightmap UV layer name.
-    Accepts the canonical LightMap name or any UV layer already at the lightmap slot.
-    """
-    if mesh is None:
+def uv_layer_at_index(mesh, uv_index: int):
+    """Return the UV layer at *uv_index*, or None when the slot is empty."""
+    if mesh is None or uv_index < 0 or len(mesh.uv_layers) <= uv_index:
         return None
-
-    if LIGHTMAP_UV_NAME in mesh.uv_layers:
-        return LIGHTMAP_UV_NAME
-
-    if len(mesh.uv_layers) > LIGHTMAP_UV_INDEX:
-        return mesh.uv_layers[LIGHTMAP_UV_INDEX].name
-
-    return None
+    return mesh.uv_layers[uv_index]
 
 
-def mesh_has_existing_lightmap_uv(mesh) -> bool:
+def _rename_uv_layer(mesh, layer, target_name: str) -> None:
+    if layer.name == target_name:
+        return
+    if target_name in mesh.uv_layers and mesh.uv_layers[target_name] is not layer:
+        mesh.uv_layers.remove(mesh.uv_layers[target_name])
+    layer.name = target_name
+
+
+def _activate_uv_layer(obj, layer, *, set_render: bool = True) -> None:
+    mesh = obj.data
+    mesh.uv_layers.active = layer
+    if set_render:
+        layer.active_render = True
+
+
+def resolve_lightmap_uv_layer_name(mesh, profile=None) -> str | None:
+    """
+    Return the existing lightmap UV layer name at the configured channel index.
+
+    Slot presence is determined by index only — imported meshes often rename UV
+    layers, so the profile name is not used when checking whether a map exists.
+    """
+    uv_index = profile_uv_channel_index(profile) if profile else _DEFAULT_UV_CHANNEL_INDEX
+    layer = uv_layer_at_index(mesh, uv_index)
+    return layer.name if layer else None
+
+
+def mesh_has_existing_lightmap_uv(mesh, profile=None) -> bool:
     """True when the mesh already has UV data at the expected lightmap slot."""
-    return resolve_lightmap_uv_layer_name(mesh) is not None
+    return resolve_lightmap_uv_layer_name(mesh, profile) is not None
 
 
-def should_preserve_existing_lightmap_uv(obj) -> bool:
-    """Preserve existing LightMap UV when overwrite is disabled and UV is present."""
+def should_preserve_existing_lightmap_uv(obj, profile=None) -> bool:
+    """Preserve existing LightMap UV when profile/object rules say not to overwrite."""
+    mesh = getattr(obj, "data", None)
+
+    if profile is not None and profile_uv_mode(profile) == "PRESERVE":
+        layer_name = resolve_lightmap_uv_layer_name(mesh, profile)
+        if layer_name is not None:
+            log_info(
+                f"Will preserve existing lightmap UV '{layer_name}' on '{obj.name}' "
+                f"(profile uv_mode=PRESERVE)"
+            )
+            return True
+
     if read_overwrite_lightmap(obj):
         return False
 
-    mesh = getattr(obj, "data", None)
-    layer_name = resolve_lightmap_uv_layer_name(mesh)
+    layer_name = resolve_lightmap_uv_layer_name(mesh, profile)
     if layer_name is None:
+        uv_index = profile_uv_channel_index(profile) if profile else _DEFAULT_UV_CHANNEL_INDEX
         log_warn(
             f"{PROP_OVERWRITE_LIGHTMAP}=False on '{obj.name}' but no UV at "
-            f"index {LIGHTMAP_UV_INDEX} (or '{LIGHTMAP_UV_NAME}') — unpacking new UV"
+            f"channel index {uv_index} — unpacking new UV"
         )
         return False
 
@@ -1487,33 +1859,202 @@ def _mesh_triangle_count(mesh) -> int:
     return len(mesh.loop_triangles)
 
 
-def _estimate_uv_islands(mesh, layer_name: str) -> int:
-    if mesh is None or layer_name not in mesh.uv_layers:
-        return 0
-    try:
-        mesh.calc_loop_triangles()
-        island_count = mesh.uv_layers[layer_name].data.calc_unique_uv_islands()
-        return max(0, int(island_count))
-    except (AttributeError, RuntimeError, TypeError):
-        return max(1, len(mesh.polygons))
+def _uv_bounds_from_layer(mesh, layer_name: str) -> tuple[float, float, float, float]:
+    uv_layer = mesh.uv_layers[layer_name].data
+    min_u = min(loop.uv.x for loop in uv_layer)
+    min_v = min(loop.uv.y for loop in uv_layer)
+    max_u = max(loop.uv.x for loop in uv_layer)
+    max_v = max(loop.uv.y for loop in uv_layer)
+    return (min_u, min_v, max_u, max_v)
 
 
-def _estimate_atlas_fill_percent(mesh, layer_name: str) -> float:
-    if mesh is None or layer_name not in mesh.uv_layers:
+def _compute_uv_area_estimate(mesh, layer_name: str) -> float:
+    """Sum UV-space triangle areas for the active lightmap layer."""
+    if layer_name not in mesh.uv_layers:
         return 0.0
 
     uv_layer = mesh.uv_layers[layer_name].data
     if not uv_layer:
         return 0.0
 
-    min_u = min(loop.uv.x for loop in uv_layer)
-    min_v = min(loop.uv.y for loop in uv_layer)
-    max_u = max(loop.uv.x for loop in uv_layer)
-    max_v = max(loop.uv.y for loop in uv_layer)
+    mesh.calc_loop_triangles()
+    total_area = 0.0
+    for tri in mesh.loop_triangles:
+        uvs = [uv_layer[loop_index].uv for loop_index in tri.loops[:3]]
+        if len(uvs) < 3:
+            continue
+        total_area += abs(
+            (uvs[1].x - uvs[0].x) * (uvs[2].y - uvs[0].y)
+            - (uvs[2].x - uvs[0].x) * (uvs[1].y - uvs[0].y)
+        ) * 0.5
 
-    width = max(0.0, max_u - min_u)
-    height = max(0.0, max_v - min_v)
-    return clamp01(width * height) * 100.0
+    return clamp01(total_area)
+
+
+def _count_uv_islands(obj, layer_name: str) -> int:
+    """Count UV islands on *obj* using BMesh edge connectivity (Blender 4.x safe)."""
+    import bmesh
+    from collections import defaultdict
+
+    mesh = obj.data
+    if mesh is None or layer_name not in mesh.uv_layers:
+        return 0
+
+    ensure_object_mode()
+
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+        uv_lay = bm.loops.layers.uv.get(layer_name)
+        if uv_lay is None:
+            return 1
+
+        def uv_vert_key(loop) -> tuple[float, float]:
+            uv = loop[uv_lay].uv
+            return (round(uv.x, 6), round(uv.y, 6))
+
+        edge_uv_faces: dict[tuple, list[int]] = defaultdict(list)
+        for face_idx, face in enumerate(bm.faces):
+            loops = face.loops
+            loop_count = len(loops)
+            for edge_idx in range(loop_count):
+                l1 = loops[edge_idx]
+                l2 = loops[(edge_idx + 1) % loop_count]
+                edge_key = tuple(sorted((uv_vert_key(l1), uv_vert_key(l2))))
+                edge_uv_faces[edge_key].append(face_idx)
+
+        visited = [False] * len(bm.faces)
+        island_count = 0
+
+        for start_idx in range(len(bm.faces)):
+            if visited[start_idx]:
+                continue
+            island_count += 1
+            stack = [start_idx]
+            visited[start_idx] = True
+            while stack:
+                face_idx = stack.pop()
+                face = bm.faces[face_idx]
+                loops = face.loops
+                loop_count = len(loops)
+                for edge_idx in range(loop_count):
+                    l1 = loops[edge_idx]
+                    l2 = loops[(edge_idx + 1) % loop_count]
+                    edge_key = tuple(sorted((uv_vert_key(l1), uv_vert_key(l2))))
+                    for neighbor_idx in edge_uv_faces[edge_key]:
+                        if neighbor_idx == face_idx or visited[neighbor_idx]:
+                            continue
+                        visited[neighbor_idx] = True
+                        stack.append(neighbor_idx)
+    finally:
+        bm.free()
+
+    if island_count <= 0 and mesh.uv_layers:
+        return 1
+    return island_count
+
+
+def capture_uv_snapshot(
+    obj,
+    bake_context: ProfileBakeContext,
+    source_object_name: str,
+    profile=None,
+) -> UVSnapshot:
+    """
+    Capture deterministic UV statistics from the final proxy mesh state.
+
+    Must be called after packing + finalization on the proxy, before bake/transfer.
+    """
+    mesh = getattr(obj, "data", None)
+    invalid_snapshot = UVSnapshot(
+        island_count=0,
+        uv_bounds=(0.0, 0.0, 0.0, 0.0),
+        uv_area_estimate=0.0,
+        valid=False,
+        source_object_name=source_object_name,
+    )
+
+    if mesh is None or not mesh.uv_layers:
+        bake_context.uv_snapshots[source_object_name] = invalid_snapshot
+        return invalid_snapshot
+
+    ensure_object_mode()
+    select_single_object(obj)
+
+    layer_name = resolve_lightmap_uv_layer_name(mesh, profile)
+    if layer_name is None:
+        bake_context.uv_snapshots[source_object_name] = invalid_snapshot
+        return invalid_snapshot
+
+    if mesh.uv_layers.active is None or mesh.uv_layers.active.name != layer_name:
+        activate_lightmap_uv(obj, layer_name, profile)
+
+    active_layer = mesh.uv_layers.active
+    active_layer_name = active_layer.name if active_layer else layer_name
+
+    island_count = _count_uv_islands(obj, active_layer_name)
+    if island_count <= 0:
+        island_count = 1
+
+    uv_bounds = _uv_bounds_from_layer(mesh, active_layer_name)
+    uv_area_estimate = _compute_uv_area_estimate(mesh, active_layer_name)
+
+    snapshot = UVSnapshot(
+        island_count=island_count,
+        uv_bounds=uv_bounds,
+        uv_area_estimate=uv_area_estimate,
+        valid=True,
+        active_layer_name=active_layer_name,
+        source_object_name=source_object_name,
+    )
+    bake_context.uv_snapshots[source_object_name] = snapshot
+    log_uv_snapshot_debug(snapshot)
+    return snapshot
+
+
+def log_uv_snapshot_debug(snapshot: UVSnapshot) -> None:
+    """Temporary debug output for UV snapshot validation."""
+    print(f"{LOG_PREFIX} [UV SNAPSHOT]")
+    print(f"{LOG_PREFIX} Object: {snapshot.source_object_name}")
+    print(f"{LOG_PREFIX} Islands: {snapshot.island_count}")
+    print(f"{LOG_PREFIX} Bounds: {snapshot.uv_bounds}")
+    print(f"{LOG_PREFIX} UV Active Layer: {snapshot.active_layer_name}")
+    print(f"{LOG_PREFIX} UV Area Estimate: {snapshot.uv_area_estimate:.6f}")
+
+
+def apply_uv_snapshot_stats(
+    stats: ProfileBakeStats,
+    bake_context: ProfileBakeContext,
+    objects,
+) -> None:
+    """Apply aggregated stats from captured proxy UV snapshots (no live mesh UV reads)."""
+    triangles = 0
+    islands = 0
+    fill_total = 0.0
+    fill_samples = 0
+
+    for obj in objects:
+        mesh = getattr(obj, "data", None)
+        if mesh is not None:
+            triangles += _mesh_triangle_count(mesh)
+
+        snapshot = bake_context.uv_snapshots.get(obj.name)
+        if snapshot is None or not snapshot.valid:
+            continue
+
+        islands += snapshot.island_count
+        fill_total += atlas_fill_percent_from_snapshot(snapshot)
+        fill_samples += 1
+
+    stats.triangles = triangles
+    stats.uv_islands = islands
+    if fill_samples:
+        stats.atlas_fill_percent = fill_total / float(fill_samples)
+        stats.pack_efficiency = stats.atlas_fill_percent
+    else:
+        stats.atlas_fill_percent = 0.0
+        stats.pack_efficiency = 0.0
 
 
 def prepare_lightmap_uv(obj, profile, settings_obj=None) -> bool:
@@ -1523,47 +2064,148 @@ def prepare_lightmap_uv(obj, profile, settings_obj=None) -> bool:
     Returns True when an existing lightmap UV was preserved (later stages skipped).
     """
     settings_obj = settings_obj or obj
-    if should_preserve_existing_lightmap_uv(settings_obj):
-        preserve_existing_lightmap_uv(obj)
+    if should_preserve_existing_lightmap_uv(settings_obj, profile):
+        preserve_existing_lightmap_uv(obj, profile)
         return True
 
+    return ensure_uv_channel(obj, profile)
+
+
+def ensure_uv_channel(obj, profile) -> bool:
+    """
+    Ensure the profile UV channel exists and is active before UV operations.
+
+    Existing lightmap slots are identified by channel index only. When a layer
+    occupies the target index under a different name, CREATE/OVERWRITE rename it
+    to the profile name; PRESERVE leaves name and data untouched.
+
+    Returns True when existing UV data was preserved (skip further UV modification).
+    """
+    uv_name = profile_uv_channel_name(profile)
+    uv_index = profile_uv_channel_index(profile)
+    uv_mode = profile_uv_mode(profile)
     mesh = obj.data
-    if len(mesh.uv_layers) == 0:
-        mesh.uv_layers.new(name="UVMap")
+
+    layer_at_index = uv_layer_at_index(mesh, uv_index)
+
+    if uv_mode == "PRESERVE" and layer_at_index is not None:
+        ensure_object_mode()
+        select_single_object(obj)
+        _activate_uv_layer(obj, layer_at_index)
+        log_info(
+            f"Preserved UV channel '{layer_at_index.name}' at index {uv_index} "
+            f"on {obj.name} (uv_mode=PRESERVE)"
+        )
+        return True
 
     ensure_object_mode()
     select_single_object(obj)
 
-    if LIGHTMAP_UV_NAME in mesh.uv_layers:
-        mesh.uv_layers.remove(mesh.uv_layers[LIGHTMAP_UV_NAME])
+    if layer_at_index is not None and uv_mode in {"CREATE", "OVERWRITE"}:
+        previous_name = layer_at_index.name
+        _rename_uv_layer(mesh, layer_at_index, uv_name)
+        move_uv_layer_to_index(mesh, uv_name, uv_index)
+        lightmap_layer = mesh.uv_layers[uv_name]
+        mesh.uv_layers.active = lightmap_layer
+        lightmap_layer.active_render = True
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+        if uv_mode == "CREATE":
+            log_info(
+                f"Using existing UV channel at index {uv_index} "
+                f"('{previous_name}' → '{uv_name}') on {obj.name}"
+            )
+        else:
+            log_info(
+                f"Overwriting UV channel at index {uv_index} "
+                f"('{previous_name}' → '{uv_name}') on {obj.name}"
+            )
+        return False
 
-    mesh.uv_layers.new(name=LIGHTMAP_UV_NAME)
-    move_uv_layer_to_index(mesh, LIGHTMAP_UV_NAME, LIGHTMAP_UV_INDEX)
+    if uv_mode == "OVERWRITE" and uv_name in mesh.uv_layers:
+        mesh.uv_layers.remove(mesh.uv_layers[uv_name])
 
-    lightmap_layer = mesh.uv_layers[LIGHTMAP_UV_NAME]
+    if len(mesh.uv_layers) == 0:
+        mesh.uv_layers.new(name="UVMap")
+
+    if uv_name not in mesh.uv_layers:
+        mesh.uv_layers.new(name=uv_name)
+
+    move_uv_layer_to_index(mesh, uv_name, uv_index)
+
+    lightmap_layer = mesh.uv_layers[uv_name]
     mesh.uv_layers.active = lightmap_layer
     lightmap_layer.active_render = True
 
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
-    log_info(f"Prepared lightmap UV layer on {obj.name}")
+    log_info(f"Prepared lightmap UV layer '{uv_name}' at index {uv_index} on {obj.name}")
     return False
 
 
-def normalize_texel_density(obj, profile) -> None:
-    """Stage 2 — apply object scale so UV islands share consistent texel density."""
-    ensure_object_mode()
-    select_single_object(obj)
+def apply_soft_texel_density(obj, target: float) -> None:
+    """Gently normalize object scale when deviation from unit scale is significant."""
+    scale_values = (abs(obj.scale.x), abs(obj.scale.y), abs(obj.scale.z))
+    scale_max = max(scale_values)
+    scale_min = min(scale_values)
+    if scale_max < 1.05 and scale_min > 0.95:
+        log_info(f"Soft texel density skipped on {obj.name} (scale near uniform)")
+        return
     apply_object_scale_for_uv(obj)
-    bpy.ops.object.mode_set(mode="EDIT")
-    bpy.ops.mesh.select_all(action="SELECT")
-    log_info(f"Normalized texel density (applied scale) on {obj.name}")
+    log_info(f"Soft texel density normalize on {obj.name} (target={target:.2f})")
+
+
+def apply_strict_texel_density(obj, target: float) -> None:
+    """Strictly apply object scale and log the configured density target."""
+    apply_object_scale_for_uv(obj)
+    log_info(f"Strict texel density enforced on {obj.name} (target={target:.2f})")
+
+
+def normalize_texel_density(objects, profile) -> None:
+    """Stage 2 — normalize texel density for profile objects based on profile mode."""
+    mode = profile_texel_density_mode(profile)
+    if mode == "OFF":
+        return
+
+    target = profile_texel_density_target(profile)
+    for obj in objects:
+        if obj is None or obj.type != "MESH":
+            continue
+        if should_preserve_existing_lightmap_uv(obj, profile):
+            continue
+
+        ensure_object_mode()
+        select_single_object(obj)
+
+        if mode == "STRICT":
+            apply_strict_texel_density(obj, target)
+        else:
+            apply_soft_texel_density(obj, target)
+
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_all(action="SELECT")
+
+
+def _pack_margin_for_strategy(profile, resolution: int) -> float:
+    base = uv_margin_normalized(
+        resolution,
+        profile.bake_margin,
+        profile.uv_margin_minimum,
+    )
+    strategy = profile_packing_strategy(profile)
+    minimum = max(0.0, float(profile.uv_margin_minimum))
+    if strategy == "DENSE":
+        return max(minimum, base * 0.5)
+    if strategy == "CONSERVATIVE":
+        return max(minimum, base * 1.5)
+    return base
 
 
 def apply_edge_inset(obj, profile) -> float:
     """Stage 3 — resolve edge inset from the profile (applied after packing)."""
+    res_x, _ = profile_atlas_resolution(profile)
     inset = uv_margin_normalized(
-        LIGHTMAP_RESOLUTION,
+        res_x,
         profile.uv_edge_inset,
         profile.uv_margin_minimum,
     )
@@ -1575,12 +2217,11 @@ def apply_edge_inset(obj, profile) -> float:
 
 
 def pack_uv_islands(obj, profile) -> None:
-    """Stage 4 — pack islands using Blender's lightmap pack operator and profile margins."""
-    pack_margin = uv_margin_normalized(
-        LIGHTMAP_RESOLUTION,
-        profile.bake_margin,
-        profile.uv_margin_minimum,
-    )
+    """Stage 4 — pack islands using the profile packing strategy and margins."""
+    res_x, _ = profile_atlas_resolution(profile)
+    pack_margin = _pack_margin_for_strategy(profile, res_x)
+    strategy = profile_packing_strategy(profile)
+    allow_rotation = profile_allow_island_rotation(profile)
 
     if bpy.context.mode != "EDIT":
         ensure_object_mode()
@@ -1588,51 +2229,185 @@ def pack_uv_islands(obj, profile) -> None:
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_all(action="SELECT")
 
-    bpy.ops.uv.lightmap_pack(
-        PREF_CONTEXT="ALL_FACES",
-        PREF_PACK_IN_ONE=True,
-        PREF_NEW_UVLAYER=False,
-        PREF_BOX_DIV=int(profile.pack_box_division),
-        PREF_MARGIN_DIV=pack_margin,
-    )
+    if strategy == "BLENDER":
+        bpy.ops.uv.pack_islands(
+            udim_packing=False,
+            rotate=allow_rotation,
+            margin=pack_margin,
+        )
+    else:
+        box_div = int(profile.pack_box_division)
+        if strategy == "DENSE":
+            box_div = max(box_div, 8)
+        elif strategy == "CONSERVATIVE":
+            box_div = max(1, box_div // 2)
+
+        bpy.ops.uv.lightmap_pack(
+            PREF_CONTEXT="ALL_FACES",
+            PREF_PACK_IN_ONE=True,
+            PREF_NEW_UVLAYER=False,
+            PREF_BOX_DIV=box_div,
+            PREF_MARGIN_DIV=pack_margin,
+        )
+
     ensure_object_mode()
     log_info(
         f"Packed UV islands on {obj.name} "
-        f"(margin={pack_margin:.4f}, box_div={profile.pack_box_division})"
+        f"(strategy={strategy}, margin={pack_margin:.4f}, rotate={allow_rotation})"
     )
 
 
 def finalize_uv_normalization(obj, profile, edge_inset_uv: float) -> None:
     mesh = obj.data
+    uv_name = profile_uv_channel_name(profile)
+    uv_index = profile_uv_channel_index(profile)
     normalize_uv_to_unit_square(mesh, edge_inset_uv=edge_inset_uv)
     mesh.update()
-    activate_lightmap_uv(obj)
+    activate_lightmap_uv(obj, uv_name, profile)
     log_info(
         f"Finalized UV normalization on {obj.name} "
-        f"(index {LIGHTMAP_UV_INDEX}, inset={edge_inset_uv:.4f})"
+        f"(index {uv_index}, inset={edge_inset_uv:.4f})"
     )
 
 
-def run_uv_pipeline(obj, profile, settings_obj=None) -> None:
-    """Run the full UV preparation pipeline for one object/proxy."""
+def run_uv_pipeline(
+    obj,
+    profile,
+    settings_obj=None,
+    bake_context: ProfileBakeContext | None = None,
+    snapshot_key: str | None = None,
+) -> None:
+    """Run the full UV preparation pipeline for one object/proxy (single-object fallback)."""
+    source_name = snapshot_key or (settings_obj.name if settings_obj else obj.name)
     preserved = prepare_lightmap_uv(obj, profile, settings_obj=settings_obj)
     if preserved:
+        if bake_context is not None:
+            capture_uv_snapshot(obj, bake_context, source_name, profile)
         return
 
-    normalize_texel_density(obj, profile)
+    normalize_texel_density([obj], profile)
     edge_inset = apply_edge_inset(obj, profile)
     pack_uv_islands(obj, profile)
     finalize_uv_normalization(obj, profile, edge_inset)
 
+    if bake_context is not None:
+        capture_uv_snapshot(obj, bake_context, source_name, profile)
 
-def validate_uv_pack_object(obj) -> tuple[bool, list[str]]:
+
+def pack_profile_uv_islands(
+    objects,
+    proxy_map,
+    profile,
+    bake_context: ProfileBakeContext | None = None,
+) -> None:
+    """
+    Pack all profile proxies into one shared 0-1 lightmap atlas.
+
+    Uses a temporary joined duplicate so every mesh in the profile shares the same
+    packed UV space, then copies UVs back to each proxy.
+    """
+    pack_objects = [
+        obj for obj in objects
+        if obj in proxy_map and not should_preserve_existing_lightmap_uv(obj, profile)
+    ]
+    proxies = [proxy_map[obj] for obj in pack_objects]
+    if not proxies:
+        return
+
+    uv_name = profile_uv_channel_name(profile)
+
+    if len(proxies) == 1:
+        obj = pack_objects[0]
+        proxy = proxies[0]
+        edge_inset = apply_edge_inset(proxy, profile)
+        pack_uv_islands(proxy, profile)
+        finalize_uv_normalization(proxy, profile, edge_inset)
+        if bake_context is not None:
+            capture_uv_snapshot(proxy, bake_context, obj.name, profile)
+        log_info(f"Packed 1 object into profile atlas: {profile.name}")
+        return
+
+    ensure_object_mode()
+    loop_counts = [len(proxy.data.loops) for proxy in proxies]
+
+    select_mesh_objects(proxies)
+    bpy.ops.object.duplicate()
+    dupes = [obj for obj in bpy.context.selected_objects if obj.type == "MESH"]
+    if len(dupes) > 1:
+        bpy.context.view_layer.objects.active = dupes[0]
+        bpy.ops.object.join()
+
+    packer = bpy.context.view_layer.objects.active
+    if packer is None or packer.type != "MESH":
+        raise RuntimeError(f"Failed to build temporary pack mesh for profile '{profile.name}'")
+
+    activate_lightmap_uv(packer, profile=profile)
+    edge_inset = apply_edge_inset(packer, profile)
+    pack_uv_islands(packer, profile)
+    finalize_uv_normalization(packer, profile, edge_inset)
+
+    packer_mesh = packer.data
+    if uv_name not in packer_mesh.uv_layers:
+        raise RuntimeError(f"Temporary pack mesh missing '{uv_name}' UV layer")
+
+    packer_layer = packer_mesh.uv_layers[uv_name]
+    packed_uvs = [0.0] * (len(packer_mesh.loops) * 2)
+    packer_layer.data.foreach_get("uv", packed_uvs)
+
+    offset = 0
+    for obj, proxy, loop_count in zip(pack_objects, proxies, loop_counts):
+        if uv_name not in proxy.data.uv_layers:
+            raise RuntimeError(f"Proxy {proxy.name} missing '{uv_name}' UV layer")
+
+        chunk = packed_uvs[offset * 2:(offset + loop_count) * 2]
+        proxy_layer = proxy.data.uv_layers[uv_name]
+        proxy_layer.data.foreach_set("uv", chunk)
+        offset += loop_count
+        activate_lightmap_uv(proxy, profile=profile)
+        proxy.data.update()
+        if bake_context is not None:
+            capture_uv_snapshot(proxy, bake_context, obj.name, profile)
+
+    packer_name = packer.name
+    bpy.data.objects.remove(packer, do_unlink=True)
+    ensure_object_mode()
+    log_info(
+        f"Packed {len(proxies)} object(s) into shared profile atlas: {profile.name} "
+        f"(temp packer removed: {packer_name})"
+    )
+
+
+def _loop_triangle_uv_area_2d(uv_layer, tri) -> float:
+    """Signed UV-space area for one mesh loop triangle."""
+    uvs = [uv_layer[loop_index].uv for loop_index in tri.loops[:3]]
+    if len(uvs) < 3:
+        return 0.0
+    return abs(
+        (uvs[1].x - uvs[0].x) * (uvs[2].y - uvs[0].y)
+        - (uvs[2].x - uvs[0].x) * (uvs[1].y - uvs[0].y)
+    ) * 0.5
+
+
+def _loop_triangle_mesh_area_3d(mesh, tri) -> float:
+    """3D surface area for one mesh loop triangle."""
+    loops = mesh.loops
+    verts = mesh.vertices
+    coords = []
+    for loop_index in tri.loops[:3]:
+        coords.append(verts[loops[loop_index].vertex_index].co)
+    if len(coords) < 3:
+        return 0.0
+    return (coords[1] - coords[0]).cross(coords[2] - coords[0]).length * 0.5
+
+
+def validate_uv_pack_object(obj, profile=None) -> tuple[bool, list[str]]:
     """Stage 5 — validate packed lightmap UVs for a single mesh."""
     issues: list[str] = []
     mesh = getattr(obj, "data", None)
     if mesh is None:
         return False, ["mesh data missing"]
 
-    layer_name = resolve_lightmap_uv_layer_name(mesh)
+    layer_name = resolve_lightmap_uv_layer_name(mesh, profile)
     if layer_name is None:
         return False, ["missing lightmap UV layer"]
 
@@ -1655,31 +2430,42 @@ def validate_uv_pack_object(obj) -> tuple[bool, list[str]]:
         issues.append("UV coordinates outside 0-1 range")
 
     mesh.calc_loop_triangles()
-    zero_area_faces = 0
-    for tri in mesh.loop_triangles:
-        loops = [uv_layer[loop_index].uv for loop_index in tri.loops]
-        if len(loops) < 3:
-            continue
-        area = abs(
-            (loops[1].x - loops[0].x) * (loops[2].y - loops[0].y)
-            - (loops[2].x - loops[0].x) * (loops[1].y - loops[0].y)
-        ) * 0.5
-        if area <= UV_VALIDATE_EPSILON:
-            zero_area_faces += 1
+    zero_area_uv_tris = 0
+    degenerate_3d_tris = 0
+    measurable_tris = 0
 
-    if zero_area_faces:
-        issues.append(f"{zero_area_faces} zero-area UV triangle(s)")
+    for tri in mesh.loop_triangles:
+        mesh_area = _loop_triangle_mesh_area_3d(mesh, tri)
+        if mesh_area <= UV_VALIDATE_EPSILON:
+            degenerate_3d_tris += 1
+            continue
+
+        measurable_tris += 1
+        if _loop_triangle_uv_area_2d(uv_layer, tri) <= UV_VALIDATE_EPSILON:
+            zero_area_uv_tris += 1
+
+    if zero_area_uv_tris:
+        ratio = zero_area_uv_tris / max(1, measurable_tris)
+        detail = (
+            f"{zero_area_uv_tris} zero-area UV triangle(s) "
+            f"({ratio * 100:.2f}% of {measurable_tris} non-degenerate tris)"
+        )
+        if degenerate_3d_tris:
+            detail += f"; ignored {degenerate_3d_tris} degenerate 3D triangle(s)"
+        # AutoLightMapColor1.py has no pre-bake UV triangle audit — Cycles tolerates
+        # sliver/degenerate UV tris on hard-surface meshes; warn only, do not block.
+        log_warn(f"{obj.name}: {detail} — continuing bake (Color1 parity)")
 
     return len(issues) == 0, issues
 
 
-def validate_uv_pack(objects) -> tuple[bool, list[str]]:
+def validate_uv_pack(objects, profile=None) -> tuple[bool, list[str]]:
     """Validate UV packing for all *objects*; returns (ok, combined issue messages)."""
     all_ok = True
     messages: list[str] = []
 
     for obj in objects:
-        ok, issues = validate_uv_pack_object(obj)
+        ok, issues = validate_uv_pack_object(obj, profile)
         if ok:
             continue
         all_ok = False
@@ -1689,27 +2475,6 @@ def validate_uv_pack(objects) -> tuple[bool, list[str]]:
             log_error(message)
 
     return all_ok, messages
-
-
-def update_profile_geometry_stats(stats: ProfileBakeStats, objects) -> None:
-    triangles = 0
-    islands = 0
-    fill_total = 0.0
-
-    for obj in objects:
-        mesh = getattr(obj, "data", None)
-        if mesh is None:
-            continue
-        triangles += _mesh_triangle_count(mesh)
-        layer_name = resolve_lightmap_uv_layer_name(mesh) or LIGHTMAP_UV_NAME
-        islands += _estimate_uv_islands(mesh, layer_name)
-        fill_total += _estimate_atlas_fill_percent(mesh, layer_name)
-
-    stats.triangles = triangles
-    stats.uv_islands = islands
-    if objects:
-        stats.atlas_fill_percent = fill_total / float(len(objects))
-        stats.pack_efficiency = clamp01(stats.atlas_fill_percent / 100.0) * 100.0
 
 
 def normalize_uv_to_unit_square(mesh, edge_inset_uv: float = 0.0) -> None:
@@ -1755,36 +2520,54 @@ def apply_object_scale_for_uv(obj) -> None:
     log_info(f"Applied object scale for UV: {obj.name}")
 
 
-def activate_lightmap_uv(obj, layer_name: str | None = None) -> None:
+def activate_lightmap_uv(
+    obj,
+    layer_name: str | None = None,
+    profile=None,
+    *,
+    rename: bool = True,
+) -> None:
     mesh = obj.data
-    layer_name = layer_name or resolve_lightmap_uv_layer_name(mesh) or LIGHTMAP_UV_NAME
+    uv_name = profile_uv_channel_name(profile) if profile else _DEFAULT_UV_CHANNEL_NAME
+    uv_index = profile_uv_channel_index(profile) if profile else _DEFAULT_UV_CHANNEL_INDEX
+
+    if layer_name is None:
+        if rename:
+            layer_name = resolve_lightmap_uv_layer_name(mesh, profile) or uv_name
+        else:
+            layer = uv_layer_at_index(mesh, uv_index)
+            if layer is None:
+                raise RuntimeError(
+                    f"{obj.name}: no UV layer at channel index {uv_index}"
+                )
+            _activate_uv_layer(obj, layer)
+            return
+
     if layer_name not in mesh.uv_layers:
         raise RuntimeError(f"{obj.name}: missing UV layer '{layer_name}'")
 
-    if layer_name != LIGHTMAP_UV_NAME:
-        mesh.uv_layers[layer_name].name = LIGHTMAP_UV_NAME
-        layer_name = LIGHTMAP_UV_NAME
-
-    move_uv_layer_to_index(mesh, LIGHTMAP_UV_NAME, LIGHTMAP_UV_INDEX)
-    layer = mesh.uv_layers[LIGHTMAP_UV_NAME]
-    mesh.uv_layers.active = layer
-    layer.active_render = True
+    layer = mesh.uv_layers[layer_name]
+    if rename:
+        _rename_uv_layer(mesh, layer, uv_name)
+        move_uv_layer_to_index(mesh, uv_name, uv_index)
+        layer = mesh.uv_layers[uv_name]
+    _activate_uv_layer(obj, layer)
 
 
-def preserve_existing_lightmap_uv(obj) -> None:
+def preserve_existing_lightmap_uv(obj, profile=None) -> None:
     """Use the mesh's existing lightmap UV without lightmap_pack or scale apply."""
     mesh = obj.data
-    layer_name = resolve_lightmap_uv_layer_name(mesh)
-    if layer_name is None:
+    uv_index = profile_uv_channel_index(profile) if profile else _DEFAULT_UV_CHANNEL_INDEX
+    layer = uv_layer_at_index(mesh, uv_index)
+    if layer is None:
         raise RuntimeError(
-            f"{obj.name}: no existing lightmap UV at index {LIGHTMAP_UV_INDEX}"
+            f"{obj.name}: no existing lightmap UV at channel index {uv_index}"
         )
 
-    activate_lightmap_uv(obj, layer_name)
+    activate_lightmap_uv(obj, layer.name, profile, rename=False)
     mesh.update()
     log_info(
-        f"Preserved existing lightmap UV '{layer_name}' → '{LIGHTMAP_UV_NAME}' "
-        f"({PROP_OVERWRITE_LIGHTMAP}=False, index {LIGHTMAP_UV_INDEX}, no unpack)"
+        f"Preserved existing lightmap UV '{layer.name}' at index {uv_index} (no unpack)"
     )
 
 
@@ -1807,11 +2590,14 @@ def recreate_lightmap_uv(obj, profile, settings_obj=None) -> None:
     run_uv_pipeline(obj, profile, settings_obj=settings_obj)
 
 
-def transfer_lightmap_uv_to_original(original_obj, proxy_obj) -> None:
-    """Copy LightMap UV from proxy mesh onto original mesh; UV0 stays intact."""
-    if should_preserve_existing_lightmap_uv(original_obj):
+def transfer_lightmap_uv_to_original(original_obj, proxy_obj, profile=None) -> None:
+    """Copy lightmap UV from proxy mesh onto original mesh; UV0 stays intact."""
+    uv_name = profile_uv_channel_name(profile) if profile else _DEFAULT_UV_CHANNEL_NAME
+    uv_index = profile_uv_channel_index(profile) if profile else _DEFAULT_UV_CHANNEL_INDEX
+
+    if should_preserve_existing_lightmap_uv(original_obj, profile):
         log_info(
-            f"Skipped {LIGHTMAP_UV_NAME} transfer to original "
+            f"Skipped {uv_name} transfer to original "
             f"({PROP_OVERWRITE_LIGHTMAP}=False): {original_obj.name}"
         )
         return
@@ -1819,39 +2605,49 @@ def transfer_lightmap_uv_to_original(original_obj, proxy_obj) -> None:
     original_mesh = original_obj.data
     proxy_mesh = proxy_obj.data
 
-    if LIGHTMAP_UV_NAME not in proxy_mesh.uv_layers:
-        raise RuntimeError(f"Proxy {proxy_obj.name} missing '{LIGHTMAP_UV_NAME}' UV")
+    if uv_name not in proxy_mesh.uv_layers:
+        raise RuntimeError(f"Proxy {proxy_obj.name} missing '{uv_name}' UV")
 
     if len(original_mesh.loops) != len(proxy_mesh.loops):
         raise RuntimeError(
             f"Loop count mismatch copying UV ({original_obj.name} vs proxy)"
         )
 
-    if LIGHTMAP_UV_NAME in original_mesh.uv_layers:
-        original_mesh.uv_layers.remove(original_mesh.uv_layers[LIGHTMAP_UV_NAME])
+    layer_at_index = uv_layer_at_index(original_mesh, uv_index)
+    if layer_at_index is not None:
+        original_mesh.uv_layers.remove(layer_at_index)
+    elif uv_name in original_mesh.uv_layers:
+        original_mesh.uv_layers.remove(original_mesh.uv_layers[uv_name])
 
-    new_layer = original_mesh.uv_layers.new(name=LIGHTMAP_UV_NAME)
-    move_uv_layer_to_index(original_mesh, LIGHTMAP_UV_NAME, LIGHTMAP_UV_INDEX)
+    new_layer = original_mesh.uv_layers.new(name=uv_name)
+    move_uv_layer_to_index(original_mesh, uv_name, uv_index)
 
-    proxy_layer = proxy_mesh.uv_layers[LIGHTMAP_UV_NAME]
+    proxy_layer = proxy_mesh.uv_layers[uv_name]
     flat = [0.0] * (len(original_mesh.loops) * 2)
     proxy_layer.data.foreach_get("uv", flat)
     new_layer.data.foreach_set("uv", flat)
 
     activate_primary_render_uv(original_obj)
     original_mesh.update()
-    log_info(f"Transferred {LIGHTMAP_UV_NAME} UV to original: {original_obj.name}")
+    log_info(f"Transferred {uv_name} UV to original: {original_obj.name}")
 
 
-def restore_primary_render_uv_for_meshes(mesh_objects) -> None:
+def restore_primary_render_uv_for_meshes(mesh_objects, scene=None) -> None:
+    if scene is None:
+        scene = bpy.context.scene
+
     restored = 0
     for obj in mesh_objects:
         if obj.type != "MESH" or obj.data is None:
             continue
         if len(obj.data.uv_layers) == 0:
             continue
-        if should_preserve_existing_lightmap_uv(obj):
+
+        profile_uuid = getattr(obj, "lightmap_profile", "") or ""
+        profile = find_profile_by_uuid(scene, profile_uuid) if profile_uuid else None
+        if should_preserve_existing_lightmap_uv(obj, profile):
             continue
+
         activate_primary_render_uv(obj)
         obj.update_tag(refresh={"DATA"})
         restored += 1
@@ -1873,22 +2669,41 @@ def object_world_bounds(obj):
     return {"min": mins, "max": maxs}
 
 
-def build_manifest_entry(obj, png_path: str, profile, ao_path: str | None = None):
+def build_manifest_entry(
+    obj,
+    png_path: str,
+    profile,
+    ao_path: str | None = None,
+    uv_snapshot: UVSnapshot | None = None,
+    shared_atlas: bool = False,
+):
+    res_x, res_y = profile_atlas_resolution(profile)
+    uv_name = profile_uv_channel_name(profile)
+    uv_index = profile_uv_channel_index(profile)
     entry = {
         "objectName": obj.name,
         "meshName": obj.data.name if obj.data else obj.name,
-        "objectStem": sanitize_filename(obj.name),
+        "objectStem": profile_object_output_stem(profile, obj.name),
         "lightmap": os.path.basename(png_path),
         "lightmapPath": json_path(png_path),
         "profileName": profile.name,
         "profileUuid": profile.uuid,
-        "uvSet": LIGHTMAP_UV_NAME,
-        "uvIndex": LIGHTMAP_UV_INDEX,
-        "lightmapUvChannel": LIGHTMAP_UV_CHANNEL,
-        "resolution": LIGHTMAP_RESOLUTION,
+        "sharedAtlas": bool(shared_atlas),
+        "atlasStem": profile_atlas_stem(profile),
+        "uvSet": uv_name,
+        "uvIndex": uv_index,
+        "lightmapUvChannel": uv_index,
+        "resolution": res_x,
+        "resolutionY": res_y,
         "bakeSettings": profile_bake_settings(profile),
         "bounds": object_world_bounds(obj),
     }
+    if uv_snapshot is not None and uv_snapshot.valid:
+        entry["uvIslands"] = uv_snapshot.island_count
+        entry["uvBounds"] = list(uv_snapshot.uv_bounds)
+        entry["uvAreaEstimate"] = uv_snapshot.uv_area_estimate
+        entry["atlasFillPercent"] = atlas_fill_percent_from_snapshot(uv_snapshot)
+        entry["packEfficiency"] = entry["atlasFillPercent"]
     if ao_path:
         entry["ao"] = os.path.basename(ao_path)
         entry["aoPath"] = json_path(ao_path)
@@ -1898,6 +2713,10 @@ def build_manifest_entry(obj, png_path: str, profile, ao_path: str | None = None
 def write_manifest(output_dir: str, lightmap_entries, profile_settings=None) -> str:
     manifest_path = os.path.join(output_dir, MANIFEST_FILENAME)
 
+    top_resolution = lightmap_entries[0]["resolution"] if lightmap_entries else 2048
+    top_uv_layer = lightmap_entries[0].get("uvSet", _DEFAULT_UV_CHANNEL_NAME) if lightmap_entries else _DEFAULT_UV_CHANNEL_NAME
+    top_uv_channel = lightmap_entries[0].get("lightmapUvChannel", _DEFAULT_UV_CHANNEL_INDEX) if lightmap_entries else _DEFAULT_UV_CHANNEL_INDEX
+
     mesh_compat = []
     for entry in lightmap_entries:
         mesh_compat.append(
@@ -1905,7 +2724,7 @@ def write_manifest(output_dir: str, lightmap_entries, profile_settings=None) -> 
                 "meshName": entry["objectName"],
                 "objectStem": entry["objectStem"],
                 "lightmap": entry["lightmap"],
-                "size": LIGHTMAP_RESOLUTION,
+                "size": entry.get("resolution", top_resolution),
             }
         )
 
@@ -1914,10 +2733,10 @@ def write_manifest(output_dir: str, lightmap_entries, profile_settings=None) -> 
         "generator": GENERATOR_NAME,
         "created": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "scene": blend_scene_name(),
-        "resolution": LIGHTMAP_RESOLUTION,
+        "resolution": top_resolution,
         "outputFolder": json_path(output_dir),
-        "uvLayer": LIGHTMAP_UV_NAME,
-        "lightmapUvChannel": LIGHTMAP_UV_CHANNEL,
+        "uvLayer": top_uv_layer,
+        "lightmapUvChannel": top_uv_channel,
         "textureFormat": "png",
         "colorSpace": "Non-Color",
         "bakeSettings": profile_settings or {},
@@ -1939,12 +2758,149 @@ def write_manifest(output_dir: str, lightmap_entries, profile_settings=None) -> 
 # --------------------------------------------------
 
 
+def bake_profile_lightmap(
+    objects,
+    output_dir: str,
+    profile,
+    proxy_map,
+    bake_context: ProfileBakeContext | None = None,
+) -> tuple[list, list[tuple[str, str]]]:
+    """Bake all profile meshes into one shared lightmap atlas."""
+    if not objects:
+        return [], []
+
+    log_info(
+        f"Starting shared profile bake: {profile.name} "
+        f"({len(objects)} object(s) → one atlas)"
+    )
+    started = time.perf_counter()
+
+    shared_image = get_or_create_profile_lightmap_image(profile)
+    png_path = os.path.join(output_dir, profile_lightmap_png_filename(profile))
+    proxies = [proxy_map[obj] for obj in objects]
+
+    visibility_states = {}
+    bake_materials = {}
+    material_override_states = []
+    original_uv_snapshots = {}
+    neutral_contributor_material = None
+    entries = []
+    errors = []
+
+    try:
+        for obj in objects:
+            if should_preserve_existing_lightmap_uv(obj, profile):
+                original_uv_snapshots[obj] = snapshot_lightmap_uv_state(obj)
+
+        for obj in objects:
+            proxy = proxy_map[obj]
+            visibility_states[obj] = hide_original_for_proxy_bake(obj)
+            bake_material = create_bake_material(
+                obj,
+                neutral_albedo=read_lightmap_neutral_albedo(obj),
+            )
+            assign_bake_material(proxy, bake_material)
+            set_active_bake_image(bake_material, shared_image)
+            bake_materials[proxy] = bake_material
+            activate_lightmap_uv(proxy, profile=profile)
+
+        override_targets = []
+        view_layer = bpy.context.view_layer
+        proxy_set = set(proxies)
+        for scene_obj in bpy.context.scene.objects:
+            if scene_obj.type != "MESH" or scene_obj in proxy_set:
+                continue
+            if scene_obj.hide_render or not is_mesh_visible_in_view_layer(scene_obj, view_layer):
+                continue
+            if read_lightmap_neutral_albedo(scene_obj):
+                override_targets.append(scene_obj)
+
+        if override_targets:
+            neutral_contributor_material = create_neutral_contributor_material()
+            for scene_obj in override_targets:
+                snapshot = apply_material_override(scene_obj, neutral_contributor_material)
+                if snapshot is not None:
+                    material_override_states.append(snapshot)
+            log_info(
+                f"Applied neutral albedo override to {len(material_override_states)} "
+                f"contributing object(s) for profile bake: {profile.name}"
+            )
+            flush_view_layer()
+
+        select_mesh_objects(proxies)
+        flush_view_layer()
+
+        log_info(f"Baking direct+indirect diffuse atlas: {profile.name}")
+        ensure_object_mode()
+        bpy.ops.object.bake(type="DIFFUSE")
+        shared_image.update()
+
+        ao_path = bake_and_apply_ao_profile(
+            proxies,
+            bake_materials,
+            shared_image,
+            profile,
+            output_dir,
+        )
+
+        save_lightmap_image(shared_image, png_path)
+
+        for obj in objects:
+            try:
+                transfer_lightmap_uv_to_original(obj, proxy_map[obj], profile)
+                if obj in original_uv_snapshots:
+                    restore_lightmap_uv_state(obj, original_uv_snapshots[obj])
+                    log_info(
+                        f"Verified original lightmap UV unchanged "
+                        f"({PROP_OVERWRITE_LIGHTMAP}=False): {obj.name}"
+                    )
+
+                uv_snapshot = None
+                if bake_context is not None:
+                    uv_snapshot = bake_context.uv_snapshots.get(obj.name)
+
+                entries.append(
+                    build_manifest_entry(
+                        obj,
+                        png_path,
+                        profile,
+                        ao_path,
+                        uv_snapshot=uv_snapshot,
+                        shared_atlas=True,
+                    )
+                )
+            except Exception as exc:
+                errors.append((obj.name, str(exc)))
+                log_error(f"Failed post-bake transfer for {obj.name}: {exc}")
+                traceback.print_exc()
+
+        elapsed = time.perf_counter() - started
+        log_info(
+            f"Finished shared profile bake: {profile.name} "
+            f"({len(entries)} entries, {elapsed:.1f}s)"
+        )
+        return entries, errors
+
+    finally:
+        restore_material_overrides(material_override_states)
+        for obj, snapshot in original_uv_snapshots.items():
+            restore_lightmap_uv_state(obj, snapshot)
+        for obj, state in visibility_states.items():
+            restore_visibility(obj, state)
+        for material in bake_materials.values():
+            remove_temporary_material(material)
+        remove_temporary_material(neutral_contributor_material)
+        ensure_object_mode()
+        flush_view_layer()
+
+
 def bake_mesh_lightmap(
     original_obj,
     output_dir: str,
     profile,
     proxy=None,
     skip_uv: bool = False,
+    bake_context: ProfileBakeContext | None = None,
 ):
     """Proxy bake workflow for one mesh using *profile* settings."""
     log_info(f"Starting bake for: {original_obj.name}")
@@ -1958,18 +2914,24 @@ def bake_mesh_lightmap(
     neutral_contributor_material = None
     visibility_state = None
     material_override_states = []
-    preserve_uv = should_preserve_existing_lightmap_uv(original_obj)
+    preserve_uv = should_preserve_existing_lightmap_uv(original_obj, profile)
     neutral_target_albedo = read_lightmap_neutral_albedo(original_obj)
     original_uv_snapshot = snapshot_lightmap_uv_state(original_obj) if preserve_uv else None
 
     try:
         if not skip_uv:
             if preserve_uv:
-                preserve_existing_lightmap_uv(proxy)
+                preserve_existing_lightmap_uv(proxy, profile)
             else:
-                run_uv_pipeline(proxy, profile, settings_obj=original_obj)
+                run_uv_pipeline(
+                    proxy,
+                    profile,
+                    settings_obj=original_obj,
+                    bake_context=bake_context,
+                    snapshot_key=original_obj.name,
+                )
 
-        image = get_or_create_lightmap_image(original_obj.name)
+        image = get_or_create_lightmap_image(original_obj.name, profile)
         log_info(f"Image created: {image.name}")
 
         bake_material = create_bake_material(
@@ -1978,7 +2940,7 @@ def bake_mesh_lightmap(
         assign_bake_material(proxy, bake_material)
         set_active_bake_image(bake_material, image)
         if not preserve_uv:
-            activate_lightmap_uv(proxy)
+            activate_lightmap_uv(proxy, profile=profile)
 
         visibility_state = hide_original_for_proxy_bake(original_obj)
 
@@ -2022,17 +2984,27 @@ def bake_mesh_lightmap(
             profile,
         )
 
-        png_path = os.path.join(output_dir, lightmap_png_filename(original_obj.name))
+        png_path = os.path.join(output_dir, lightmap_png_filename(original_obj.name, profile))
         save_lightmap_image(image, png_path)
 
-        transfer_lightmap_uv_to_original(original_obj, proxy)
+        transfer_lightmap_uv_to_original(original_obj, proxy, profile)
         if preserve_uv:
             restore_lightmap_uv_state(original_obj, original_uv_snapshot)
             log_info(
                 f"Verified original lightmap UV unchanged "
                 f"({PROP_OVERWRITE_LIGHTMAP}=False): {original_obj.name}"
             )
-        entry = build_manifest_entry(original_obj, png_path, profile, ao_path)
+        uv_snapshot = None
+        if bake_context is not None:
+            uv_snapshot = bake_context.uv_snapshots.get(original_obj.name)
+
+        entry = build_manifest_entry(
+            original_obj,
+            png_path,
+            profile,
+            ao_path,
+            uv_snapshot=uv_snapshot,
+        )
 
         elapsed = time.perf_counter() - started
         log_info(f"Finished bake for: {original_obj.name} ({elapsed:.1f}s)")
@@ -2053,16 +3025,31 @@ def bake_mesh_lightmap(
         flush_view_layer()
 
 
-def prepare_profile_proxies(objects, profile) -> dict:
-    """Create proxies and run the UV pipeline for each object in *objects*."""
+def prepare_profile_proxies(
+    objects,
+    profile,
+    bake_context: ProfileBakeContext | None = None,
+) -> dict:
+    """Create proxies and pack all profile members into one shared lightmap atlas."""
     proxy_map = {}
+    to_normalize = []
     for obj in objects:
         proxy = create_proxy(obj)
-        if should_preserve_existing_lightmap_uv(obj):
-            preserve_existing_lightmap_uv(proxy)
-        else:
-            run_uv_pipeline(proxy, profile, settings_obj=obj)
         proxy_map[obj] = proxy
+
+        if should_preserve_existing_lightmap_uv(obj, profile):
+            preserve_existing_lightmap_uv(proxy, profile)
+            if bake_context is not None:
+                capture_uv_snapshot(proxy, bake_context, obj.name, profile)
+        else:
+            prepare_lightmap_uv(proxy, profile, settings_obj=obj)
+            to_normalize.append(proxy)
+
+    if to_normalize:
+        normalize_texel_density(to_normalize, profile)
+        ensure_object_mode()
+
+    pack_profile_uv_islands(objects, proxy_map, profile, bake_context=bake_context)
     return proxy_map
 
 
@@ -2071,42 +3058,25 @@ def perform_bake(
     objects,
     output_dir: str,
     proxy_map=None,
+    bake_context: ProfileBakeContext | None = None,
 ) -> tuple[list, list[tuple[str, str]]]:
-    """Bake all *objects* for *profile*.
-
-    When *proxy_map* is supplied, UV preparation is skipped and proxies are not removed.
-    """
+    """Bake the entire profile into one shared lightmap atlas."""
     owns_proxies = proxy_map is None
     if proxy_map is None:
-        proxy_map = prepare_profile_proxies(objects, profile)
-
-    entries = []
-    errors = []
+        proxy_map = prepare_profile_proxies(objects, profile, bake_context=bake_context)
 
     try:
-        for index, obj in enumerate(objects, start=1):
-            log_info(f"Baking object {index}/{len(objects)}: {obj.name}")
-            try:
-                entry = bake_mesh_lightmap(
-                    obj,
-                    output_dir,
-                    profile,
-                    proxy=proxy_map[obj],
-                    skip_uv=True,
-                )
-                entries.append(entry)
-            except Exception as exc:
-                errors.append((obj.name, str(exc)))
-                log_error(f"Failed bake for {obj.name}: {exc}")
-                traceback.print_exc()
-                ensure_object_mode()
-                flush_view_layer()
+        return bake_profile_lightmap(
+            objects,
+            output_dir,
+            profile,
+            proxy_map,
+            bake_context=bake_context,
+        )
     finally:
         if owns_proxies:
             for proxy in proxy_map.values():
                 delete_proxy(proxy)
-
-    return entries, errors
 
 
 def save_outputs(_profile, manifest_entries, output_dir: str) -> str | None:
@@ -2127,44 +3097,63 @@ def process_bake_profile(
     profile,
     scene,
     view_layer,
-    output_dir: str,
-) -> tuple[list, ProfileBakeStats]:
+) -> tuple[list, ProfileBakeStats, str | None]:
     stats = ProfileBakeStats(profile_name=profile.name)
     started = time.perf_counter()
 
     log_section(f"Bake Profile: {profile.name}")
+    log_profile_settings(profile)
+
+    is_valid, validation_issues = validate_profile_settings(profile)
+    if not is_valid:
+        for issue in validation_issues:
+            log_warn(f"Profile '{profile.name}' settings invalid: {issue} — skipping")
+        stats.issues.extend(validation_issues)
+        return [], stats, None
+
+    output_dir = ensure_profile_output_dir(profile)
+    if output_dir is None:
+        log_warn(
+            f"Profile '{profile.name}' output directory unavailable — skipping"
+        )
+        stats.issues.append("output directory unavailable")
+        return [], stats, None
+
+    log_info(f"Output directory: {json_path(output_dir)}")
+
     objects = collect_profile_objects(profile, scene, view_layer)
     stats.objects_processed = len(objects)
     log_info(f"Objects: {len(objects)}")
 
     if not objects:
         log_warn(f"Profile '{profile.name}' has no assigned objects — skipping")
-        return [], stats
+        return [], stats, output_dir
 
     valid_objects, skipped = validate_objects(objects, view_layer)
     stats.objects_skipped = len(skipped)
 
     if not valid_objects:
         log_warn(f"Profile '{profile.name}' has no valid objects to bake — skipping")
-        return [], stats
+        return [], stats, output_dir
 
-    update_profile_geometry_stats(stats, valid_objects)
+    bake_context = ProfileBakeContext(profile_name=profile.name)
 
     log_info("Preparing UVs...")
     proxy_map = {}
     try:
-        proxy_map = prepare_profile_proxies(valid_objects, profile)
+        proxy_map = prepare_profile_proxies(valid_objects, profile, bake_context=bake_context)
+        log_info("Packing Islands... (shared profile atlas)")
 
         log_info("Validating...")
-        uv_ok, uv_issues = validate_uv_pack(list(proxy_map.values()))
+        uv_ok, uv_issues = validate_uv_pack(list(proxy_map.values()), profile)
         if not uv_ok:
             stats.issues.extend(uv_issues)
             log_error(
                 f"UV validation failed for profile '{profile.name}' — skipping bake"
             )
-            return [], stats
+            return [], stats, output_dir
 
-        update_profile_geometry_stats(stats, valid_objects)
+        apply_uv_snapshot_stats(stats, bake_context, valid_objects)
 
         log_info("Bake Started...")
         device_info = configure_cycles(profile, scene)
@@ -2173,13 +3162,14 @@ def process_bake_profile(
                 f"GPU-only baking required for profile '{profile.name}' "
                 "but no compatible GPU was found — skipping"
             )
-            return [], stats
+            return [], stats, output_dir
 
         entries, errors = perform_bake(
             profile,
             valid_objects,
             output_dir,
             proxy_map=proxy_map,
+            bake_context=bake_context,
         )
         stats.objects_baked = len(entries)
         stats.objects_failed = len(errors)
@@ -2193,15 +3183,14 @@ def process_bake_profile(
         log_info(f"Atlas Fill %: {stats.atlas_fill_percent:.1f}")
         log_info(f"Pack Efficiency: {stats.pack_efficiency:.1f}")
 
-        return entries, stats
+        return entries, stats, output_dir
     finally:
         cleanup_profile_run(list(proxy_map.values()))
 
 
 def main():
+    clear_console()
     log_info(f"{GENERATOR_NAME} — profile-driven lightmap bake (proxy workflow)")
-    output_dir = ensure_output_dir(OUTPUT_DIR)
-    log_info(f"Output directory: {json_path(output_dir)}")
 
     scene = bpy.context.scene
     if not addon_profiles_available(scene):
@@ -2222,7 +3211,7 @@ def main():
 
     log_unassigned_selected_meshes(scene, view_layer)
 
-    manifest_entries = []
+    manifest_by_output: dict[str, list] = {}
     profile_stats: list[ProfileBakeStats] = []
     hidden_mesh_render_overrides = []
     pipeline_started = time.perf_counter()
@@ -2234,18 +3223,20 @@ def main():
         )
 
         for profile in profiles:
-            entries, stats = process_bake_profile(
+            entries, stats, output_dir = process_bake_profile(
                 profile,
                 scene,
                 view_layer,
-                output_dir,
             )
-            manifest_entries.extend(entries)
             profile_stats.append(stats)
+            if entries and output_dir:
+                manifest_by_output.setdefault(output_dir, []).extend(entries)
 
-        if manifest_entries:
-            save_outputs(None, manifest_entries, output_dir)
-        else:
+        for output_dir, entries in manifest_by_output.items():
+            save_outputs(None, entries, output_dir)
+            log_info(f"Manifest written for: {json_path(output_dir)}")
+
+        if not manifest_by_output:
             log_warn("No lightmaps baked — manifest not written")
 
     finally:
@@ -2253,15 +3244,16 @@ def main():
         for profile in profiles:
             baked_objects.extend(collect_profile_objects(profile, scene, view_layer))
         restore_hidden_mesh_render_overrides(hidden_mesh_render_overrides)
-        restore_primary_render_uv_for_meshes(baked_objects)
+        restore_primary_render_uv_for_meshes(baked_objects, scene)
         restore_world_ao_state(scene, world_ao_state)
         restore_render_state(scene, render_state)
         restore_selection_context(selection_state)
         log_info(f"Restored render engine: {scene.render.engine}")
 
     log_section("Bake Summary")
+    total_baked = sum(len(entries) for entries in manifest_by_output.values())
     log_info(f"Profiles processed: {len(profiles)}")
-    log_info(f"Total baked: {len(manifest_entries)}")
+    log_info(f"Total baked: {total_baked}")
     log_info(f"Total time: {format_duration(time.perf_counter() - pipeline_started)}")
 
     for stats in profile_stats:
@@ -2273,14 +3265,15 @@ def main():
         for issue in stats.issues:
             log_info(f"    issue: {issue}")
 
-    if manifest_entries:
+    if manifest_by_output:
         log_info("Output images:")
-        for entry in manifest_entries:
-            line = f"  {entry['lightmap']} ({entry.get('profileName', 'unknown')})"
-            if entry.get("ao"):
-                line += f" (+ AO: {entry['ao']})"
-            log_info(line)
-        log_info(f"Manifest: {json_path(os.path.join(output_dir, MANIFEST_FILENAME))}")
+        for output_dir, entries in manifest_by_output.items():
+            for entry in entries:
+                line = f"  {entry['lightmap']} ({entry.get('profileName', 'unknown')})"
+                if entry.get("ao"):
+                    line += f" (+ AO: {entry['ao']})"
+                log_info(line)
+            log_info(f"Manifest: {json_path(os.path.join(output_dir, MANIFEST_FILENAME))}")
     else:
         log_warn("No output files were written")
 
